@@ -1,0 +1,65 @@
+# yaml-language-server: $schema=https://promptfoo.dev/config-schema.json
+#
+# Evalúa tu agente por URL, igual que el flujo de n8n:
+#   lee el dataset (CSV o Google Sheets) -> llama al agente por cada fila
+#   -> compara contra lo esperado -> guarda resultados (UI, JSON o Sheets).
+#
+# Ejecutar (desde esta carpeta):
+#   AGENT_URL=http://localhost:5150/eval/run AGENT_EVAL_KEY=dev-eval-key \
+#   ANTHROPIC_API_KEY=... npx promptfoo@0.124.1 eval
+#   npx promptfoo@0.124.1 view      # UI local con el detalle de cada caso
+
+description: Evals del agente de pedidos
+
+# La entrada del usuario sale de la columna "input" del dataset.
+prompts:
+  - '{{input}}'
+
+providers:
+  - id: https
+    label: agente-pedidos
+    config:
+      url: '{{env.AGENT_URL}}'
+      method: POST
+      headers:
+        Content-Type: application/json
+        X-Eval-Key: '{{env.AGENT_EVAL_KEY}}'
+      body:
+        input: '{{prompt}}'
+        context:
+          caso: '{{id}}'
+      # Convierte la respuesta del endpoint (ver samples/AgentEndpoint/Contracts.cs)
+      # en salida + metadatos; assertions.js lee las herramientas de metadata.
+      transformResponse: |
+        ({
+          output: json.output,
+          metadata: { toolCalls: json.toolCalls, latencyMs: json.latencyMs, traceId: json.traceId },
+          tokenUsage: json.usage
+            ? { prompt: json.usage.inputTokens, completion: json.usage.outputTokens, total: json.usage.inputTokens + json.usage.outputTokens }
+            : undefined,
+        })
+
+# Dataset compartido con el runner .NET. Para usar Google Sheets en vez de CSV:
+#   tests: https://docs.google.com/spreadsheets/d/<SHEET_ID>/edit?usp=sharing
+tests: file://../dataset/casos.csv
+
+defaultTest:
+  options:
+    # Modelo juez para llm-rubric. Puede ser otro proveedor (openai:..., azure:...).
+    provider: anthropic:messages:claude-sonnet-5-5
+  assert:
+    # Chequeos deterministas: must_contain, must_not_contain, expected_tools.
+    - type: javascript
+      value: file://assertions.js
+      metric: deterministas
+    # Juez LLM con la rúbrica de cada fila.
+    - type: llm-rubric
+      value: '{{rubric}}'
+      metric: rubrica
+    # Presupuesto de latencia (ms) por caso.
+    - type: latency
+      threshold: 15000
+
+# Resultados: además de la UI, puedes escribirlos en un archivo o en Sheets:
+#   npx promptfoo@0.124.1 eval -o resultados.json
+#   npx promptfoo@0.124.1 eval -o https://docs.google.com/spreadsheets/d/<SHEET_ID>/edit#gid=<GID>
