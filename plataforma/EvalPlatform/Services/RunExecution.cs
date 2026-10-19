@@ -171,6 +171,7 @@ public sealed class RunExecutor(
             RawResponse = invocation.RawResponse,
             HttpStatus = invocation.HttpStatus,
             LatencyMs = invocation.LatencyMs,
+            Tokens = invocation.Tokens,
         };
 
         if (!invocation.Succeeded)

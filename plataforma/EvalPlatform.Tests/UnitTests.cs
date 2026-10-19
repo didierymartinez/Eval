@@ -196,6 +196,27 @@ public class CheckRunnerTests
     }
 
     [Fact]
+    public async Task Herramientas_en_orden_permite_otras_en_medio()
+    {
+        var tools = new List<string> { "buscar_base", "buscar_pedido", "log", "crear_ticket" };
+        Assert.Equal(CheckStatus.Passed, (await Run(new() { Type = CheckTypes.ToolsInOrder, ExpectedValue = "buscar_pedido|crear_ticket" }, Case("x", tools: tools))).Status);
+        CheckResult wrongOrder = await Run(new() { Type = CheckTypes.ToolsInOrder, ExpectedValue = "crear_ticket|buscar_pedido" }, Case("x", tools: tools));
+        Assert.Equal(CheckStatus.Failed, wrongOrder.Status);
+        Assert.Contains("crear_ticket → buscar_pedido", wrongOrder.Reason);
+    }
+
+    [Fact]
+    public async Task Tokens_maximos()
+    {
+        var agent = new Agent { Name = "a", Url = "http://x", TokensPath = "usage.total_tokens" };
+        CaseData With(int? tokens) => new(agent, "q", new Dictionary<string, string>(), new AgentInvocation { Output = "x", Tokens = tokens });
+        var runner = new CheckRunner(new FakeJudgeProvider(null));
+        Assert.Equal(CheckStatus.Passed, (await runner.RunAsync(new() { Type = CheckTypes.Tokens, Threshold = 500 }, With(480), CancellationToken.None)).Status);
+        Assert.Equal(CheckStatus.Failed, (await runner.RunAsync(new() { Type = CheckTypes.Tokens, Threshold = 500 }, With(900), CancellationToken.None)).Status);
+        Assert.Equal(CheckStatus.Error, (await runner.RunAsync(new() { Type = CheckTypes.Tokens }, With(null), CancellationToken.None)).Status);
+    }
+
+    [Fact]
     public async Task Se_omite_si_la_columna_esperada_esta_vacia()
     {
         CheckResult r = await Run(new() { Type = CheckTypes.Contains, ExpectedColumn = "c" }, Case("x", new() { ["c"] = " " }));

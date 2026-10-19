@@ -37,7 +37,7 @@ var app = builder.Build();
 
 await using (EvalDbContext db = await app.Services.GetRequiredService<IDbContextFactory<EvalDbContext>>().CreateDbContextAsync())
 {
-    await db.Database.EnsureCreatedAsync();
+    await SchemaUpgrade.ApplyAsync(db);
 }
 
 app.UseDefaultFiles();

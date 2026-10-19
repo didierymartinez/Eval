@@ -127,6 +127,42 @@ public sealed class CheckRunner(IJudgeProvider judgeProvider)
                 return Score(result, (double)(wanted.Length - missing.Length) / wanted.Length, missing.Length == 0,
                     missing.Length == 0 ? $"Llamó lo esperado ({calledText})." : $"Faltó llamar: {string.Join(", ", missing)}. Llamó: {calledText}.");
             }
+            case CheckTypes.ToolsInOrder:
+            {
+                if (string.IsNullOrWhiteSpace(data.Agent.ToolsPath))
+                {
+                    return Set(result, CheckStatus.Error, "Configura en el agente la ruta de las herramientas para usar esta comparación.");
+                }
+                List<string> called = data.Invocation.Tools;
+                string[] wanted = SplitList(expected);
+                int matched = 0;
+                foreach (string tool in called)
+                {
+                    if (matched < wanted.Length && tool.Equals(wanted[matched], StringComparison.OrdinalIgnoreCase))
+                    {
+                        matched++;
+                    }
+                }
+                string calledText = called.Count == 0 ? "ninguna" : string.Join(" → ", called);
+                return Score(result, (double)matched / wanted.Length, matched == wanted.Length,
+                    matched == wanted.Length
+                        ? $"Llamó en el orden esperado ({calledText})."
+                        : $"Se esperaba {string.Join(" → ", wanted)}; llamó: {calledText}.");
+            }
+            case CheckTypes.Tokens:
+            {
+                if (string.IsNullOrWhiteSpace(data.Agent.TokensPath))
+                {
+                    return Set(result, CheckStatus.Error, "Configura en el agente la ruta de los tokens para usar esta comparación.");
+                }
+                if (data.Invocation.Tokens is not int tokens)
+                {
+                    return Set(result, CheckStatus.Error, $"La respuesta no trae tokens en la ruta '{data.Agent.TokensPath}'.");
+                }
+                double limit = check.Threshold ?? info.DefaultThreshold ?? 4000;
+                result.Display = $"{tokens} tokens";
+                return Score(result, tokens <= limit ? 1 : 0, tokens <= limit, $"Usó {tokens} tokens (máximo {limit:0}).");
+            }
             case CheckTypes.Latency:
             {
                 double limit = check.Threshold ?? info.DefaultThreshold ?? 15000;

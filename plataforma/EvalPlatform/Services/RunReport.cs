@@ -14,6 +14,8 @@ public sealed record RunSummary(
     int Errors,
     double? PassRate,
     long AverageLatencyMs,
+    double? AverageTokens,
+    double? PreviousAverageTokens,
     int? CasesPassingAllAttempts,
     int SkippedJudgeChecks,
     IReadOnlyList<CheckSummary> Checks,
@@ -71,12 +73,20 @@ public static class RunReport
             results.Select(r => r.RowIndex).Distinct().Count(),
             passed, failed, errors, passRate,
             results.Count == 0 ? 0 : (long)results.Average(r => r.LatencyMs),
+            AverageTokens(results),
+            previousResults is null ? null : AverageTokens(previousResults),
             allAttempts,
             skippedJudge,
             checks,
             previous?.Id,
             previousPassRate,
             changes);
+    }
+
+    private static double? AverageTokens(IReadOnlyList<RunResult> results)
+    {
+        var withTokens = results.Where(r => r.Tokens is not null).ToList();
+        return withTokens.Count == 0 ? null : withTokens.Average(r => r.Tokens!.Value);
     }
 
     public static byte[] ToExcel(Run run, IReadOnlyList<RunResult> results, RunSummary summary, IReadOnlyList<string> datasetColumns)
@@ -98,8 +108,15 @@ public static class RunReport
         resumen.Cell(6, 2).Value = summary.Failed;
         resumen.Cell(7, 1).Value = "Errores";
         resumen.Cell(7, 2).Value = summary.Errors;
+        resumen.Cell(8, 1).Value = "Qué cambió";
+        resumen.Cell(8, 2).Value = run.Note ?? "";
+        if (summary.AverageTokens is double tokens)
+        {
+            resumen.Cell(8, 3).Value = "Tokens promedio";
+            resumen.Cell(8, 4).Value = Math.Round(tokens);
+        }
 
-        int row = 9;
+        int row = 10;
         string[] headers = ["Comparación", "Cuenta para aprobar", "Pasaron", "Fallaron", "Omitidas", "Errores", "Puntaje promedio"];
         for (int i = 0; i < headers.Length; i++)
         {
@@ -124,7 +141,7 @@ public static class RunReport
         resumen.Columns().AdjustToContents(1, 60);
 
         IXLWorksheet detalle = workbook.Worksheets.Add("Casos");
-        var columns = new List<string> { "Caso", "Intento", "Resultado", "Entrada", "Respuesta del agente", "Latencia (ms)", "Error" };
+        var columns = new List<string> { "Caso", "Intento", "Resultado", "Entrada", "Respuesta del agente", "Latencia (ms)", "Tokens", "Error" };
         foreach (CheckSummary c in summary.Checks)
         {
             columns.Add(c.Label);
@@ -148,6 +165,11 @@ public static class RunReport
             detalle.Cell(r, col++).Value = result.Input;
             detalle.Cell(r, col++).Value = result.Output ?? "";
             detalle.Cell(r, col++).Value = result.LatencyMs;
+            if (result.Tokens is int t)
+            {
+                detalle.Cell(r, col).Value = t;
+            }
+            col++;
             detalle.Cell(r, col++).Value = result.Error ?? "";
             for (int i = 0; i < summary.Checks.Count; i++)
             {
@@ -163,6 +185,29 @@ public static class RunReport
         detalle.SheetView.FreezeRows(1);
         detalle.Columns().AdjustToContents(1, 60);
 
+        using var stream = new MemoryStream();
+        workbook.SaveAs(stream);
+        return stream.ToArray();
+    }
+
+    public static byte[] DatasetToExcel(Dataset dataset)
+    {
+        using var workbook = new XLWorkbook();
+        IXLWorksheet sheet = workbook.Worksheets.Add("Casos");
+        for (int c = 0; c < dataset.Columns.Count; c++)
+        {
+            sheet.Cell(1, c + 1).Value = dataset.Columns[c];
+        }
+        sheet.Row(1).Style.Font.Bold = true;
+        for (int r = 0; r < dataset.Rows.Count; r++)
+        {
+            for (int c = 0; c < dataset.Columns.Count; c++)
+            {
+                sheet.Cell(r + 2, c + 1).Value = dataset.Rows[r].TryGetValue(dataset.Columns[c], out string? v) ? v : "";
+            }
+        }
+        sheet.SheetView.FreezeRows(1);
+        sheet.Columns().AdjustToContents(1, 60);
         using var stream = new MemoryStream();
         workbook.SaveAs(stream);
         return stream.ToArray();

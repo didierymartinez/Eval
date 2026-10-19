@@ -15,13 +15,16 @@ public sealed record AgentInput(
     string? ResponsePath,
     string? ContextPath,
     string? ToolsPath,
-    int? TimeoutSeconds);
+    int? TimeoutSeconds,
+    string? TokensPath = null);
 
 public sealed record AgentTestInput(AgentInput Agent, string Input, Dictionary<string, string>? Row);
 
 public sealed record DatasetLinkInput(string Name, string Url);
 
 public sealed record RenameInput(string Name);
+
+public sealed record RunInput(string? Note);
 
 public sealed record EvaluationInput(string Name, int AgentId, int DatasetId, string InputColumn, List<CheckDefinition> Checks, int? Repetitions);
 
@@ -116,6 +119,7 @@ public static class ApiEndpoints
                 output = r.Output,
                 context = r.Context,
                 tools = r.Tools,
+                tokens = r.Tokens,
                 raw = r.RawResponse,
             });
         });
@@ -159,6 +163,7 @@ public static class ApiEndpoints
         agent.ResponsePath = input.ResponsePath?.Trim() ?? "";
         agent.ContextPath = string.IsNullOrWhiteSpace(input.ContextPath) ? null : input.ContextPath.Trim();
         agent.ToolsPath = string.IsNullOrWhiteSpace(input.ToolsPath) ? null : input.ToolsPath.Trim();
+        agent.TokensPath = string.IsNullOrWhiteSpace(input.TokensPath) ? null : input.TokensPath.Trim();
         agent.TimeoutSeconds = Math.Clamp(input.TimeoutSeconds ?? 120, 1, 1800);
         return agent;
     }
@@ -273,6 +278,36 @@ public static class ApiEndpoints
             await db.SaveChangesAsync(ct);
             return Results.Ok(new { dataset.Id, rowCount = dataset.Rows.Count });
         });
+
+        g.MapPost("/generar", async (GenerateCasesInput input, IJudgeProvider judgeProvider, EvalDbContext db, CancellationToken ct) =>
+        {
+            if (judgeProvider.Get() is not { } judge)
+            {
+                return Bad("Para generar casos con IA hay que configurar el juez IA (ver README, sección Juez IA).");
+            }
+            if (string.IsNullOrWhiteSpace(input.Name) || string.IsNullOrWhiteSpace(input.Description))
+            {
+                return Bad("Ponle un nombre y describe qué hace el agente.");
+            }
+            ImportedTable table;
+            try
+            {
+                table = await CaseGenerator.GenerateAsync(judge, input, ct);
+            }
+            catch (ImportException ex)
+            {
+                return Bad(ex.Message);
+            }
+            var dataset = new Dataset { Name = input.Name.Trim(), SourceFileName = "generado con IA", Columns = table.Columns, Rows = table.Rows };
+            db.Datasets.Add(dataset);
+            await db.SaveChangesAsync(ct);
+            return Results.Created($"/api/datasets/{dataset.Id}", new { dataset.Id, rowCount = dataset.Rows.Count });
+        });
+
+        g.MapGet("/{id:int}/excel", async (int id, EvalDbContext db) =>
+            await db.Datasets.FindAsync(id) is Dataset d
+                ? Results.File(RunReport.DatasetToExcel(d), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", $"{string.Concat(d.Name.Split(Path.GetInvalidFileNameChars()))}.xlsx")
+                : Results.NotFound());
 
         g.MapPut("/{id:int}", async (int id, RenameInput input, EvalDbContext db) =>
         {
@@ -391,7 +426,7 @@ public static class ApiEndpoints
             return Results.NoContent();
         });
 
-        g.MapPost("/{id:int}/ejecutar", async (int id, EvalDbContext db, RunQueue queue) =>
+        g.MapPost("/{id:int}/ejecutar", async (int id, RunInput? input, EvalDbContext db, RunQueue queue) =>
         {
             if (await db.Evaluations.FindAsync(id) is not Evaluation evaluation)
             {
@@ -413,6 +448,7 @@ public static class ApiEndpoints
                 EvaluationName = evaluation.Name,
                 AgentName = agent.Name,
                 DatasetName = dataset.Name,
+                Note = string.IsNullOrWhiteSpace(input?.Note) ? null : input.Note.Trim(),
                 Checks = evaluation.Checks,
                 Total = dataset.Rows.Count * Math.Max(1, evaluation.Repetitions),
             };
@@ -478,8 +514,9 @@ public static class ApiEndpoints
         {
             Type = c.Type,
             Label = string.IsNullOrWhiteSpace(c.Label) ? null : c.Label.Trim(),
-            ExpectedColumn = string.IsNullOrWhiteSpace(c.ExpectedColumn) ? null : c.ExpectedColumn,
-            ExpectedValue = string.IsNullOrWhiteSpace(c.ExpectedColumn) && !string.IsNullOrWhiteSpace(c.ExpectedValue) ? c.ExpectedValue : null,
+            // Solo se guarda lo esperado en los tipos que lo usan.
+            ExpectedColumn = CheckTypes.Find(c.Type)?.NeedsExpected != true || string.IsNullOrWhiteSpace(c.ExpectedColumn) ? null : c.ExpectedColumn,
+            ExpectedValue = CheckTypes.Find(c.Type)?.NeedsExpected != true || !string.IsNullOrWhiteSpace(c.ExpectedColumn) || string.IsNullOrWhiteSpace(c.ExpectedValue) ? null : c.ExpectedValue,
             ResponsePath = string.IsNullOrWhiteSpace(c.ResponsePath) ? null : c.ResponsePath.Trim(),
             Threshold = c.Threshold,
             Blocking = c.Blocking,
@@ -497,6 +534,7 @@ public static class ApiEndpoints
         r.EvaluationName,
         r.AgentName,
         r.DatasetName,
+        r.Note,
         r.Status,
         r.Error,
         r.Total,
@@ -601,17 +639,17 @@ public static class ApiEndpoints
         new("eval-run", "Endpoint de evaluación (C# u otro)",
             "Un endpoint propio que devuelve { output, toolCalls[], ... }, como samples/AgentEndpoint de este repositorio.",
             new AgentInput("Mi agente", "http://localhost:5150/eval/run", "POST", new() { ["X-Eval-Key"] = "{{env:AGENT_EVAL_KEY}}" },
-                """{ "input": "{{input}}" }""", "output", null, "toolCalls[*].name", 120)),
+                """{ "input": "{{input}}" }""", "output", null, "toolCalls[*].name", 120, "usage.inputTokens, usage.outputTokens")),
         new("openai", "Prompt directo a un modelo (API compatible con OpenAI)",
             "Para evaluar un prompt sin agente: el prompt de sistema va en el cuerpo y la clave en una variable de entorno.",
             new AgentInput("Mi prompt", "https://api.openai.com/v1/chat/completions", "POST", new() { ["Authorization"] = "Bearer {{env:OPENAI_API_KEY}}" },
                 """{ "model": "gpt-5-mini", "messages": [ { "role": "system", "content": "Eres un asistente de soporte. Responde en español, breve y amable." }, { "role": "user", "content": "{{input}}" } ] }""",
-                "choices[0].message.content", null, "choices[0].message.tool_calls[*].function.name", 120)),
+                "choices[0].message.content", null, "choices[0].message.tool_calls[*].function.name", 120, "usage.total_tokens")),
         new("anthropic", "Prompt directo a Claude (API de Anthropic)",
             "Igual que la anterior pero con la API de Messages de Anthropic.",
             new AgentInput("Mi prompt con Claude", "https://api.anthropic.com/v1/messages", "POST",
                 new() { ["x-api-key"] = "{{env:ANTHROPIC_API_KEY}}", ["anthropic-version"] = "2023-06-01" },
                 """{ "model": "claude-sonnet-5-5", "max_tokens": 1024, "system": "Eres un asistente de soporte. Responde en español, breve y amable.", "messages": [ { "role": "user", "content": "{{input}}" } ] }""",
-                "content[*].text", null, null, 120)),
+                "content[*].text", null, "content[*].name", 120, "usage.input_tokens, usage.output_tokens")),
     ];
 }

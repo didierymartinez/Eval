@@ -22,6 +22,8 @@ public static class CheckTypes
     public const string Similarity = "similitud";
     public const string Regex = "regex";
     public const string Tools = "herramientas";
+    public const string ToolsInOrder = "herramientas_orden";
+    public const string Tokens = "tokens";
     public const string Latency = "latencia";
     public const string Correctness = "correccion";
     public const string Relevance = "relevancia";
@@ -49,6 +51,12 @@ public static class CheckTypes
         new(Tools, "Usó las herramientas",
             "El agente llamó todas las herramientas esperadas (separadas por |; el orden no importa). 'ninguna' = no debía llamar herramientas. Requiere configurar en el agente dónde vienen las herramientas.",
             CheckFamily.Behavior, true, false, null, null),
+        new(ToolsInOrder, "Usó las herramientas en orden",
+            "Como la anterior, pero las herramientas deben aparecer en ese orden (puede haber otras en medio). Útil cuando importa la secuencia: por ejemplo, buscar_pedido antes de crear_ticket.",
+            CheckFamily.Behavior, true, false, null, null),
+        new(Tokens, "Consume pocos tokens",
+            "El agente usó como máximo esa cantidad de tokens. Requiere configurar en el agente dónde vienen los tokens.",
+            CheckFamily.Behavior, false, false, 4000, "Tokens máximos"),
         new(Latency, "Responde a tiempo",
             "El agente respondió en menos del tiempo indicado.",
             CheckFamily.Behavior, false, false, 15000, "Milisegundos máximos"),

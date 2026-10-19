@@ -148,7 +148,7 @@ async function pageHome() {
       ? h('div', { class: 'notice info' },
           h('strong', null, '¿Primera vez? '),
           'Hay una evaluación de ejemplo lista con un agente de helpdesk simulado. ',
-          h('button', { class: 'primary', onclick: () => runEvaluation(demo.id) }, 'Ejecutar el ejemplo'))
+          h('button', { class: 'primary', onclick: () => runEvaluation(demo.id, { askNote: false }) }, 'Ejecutar el ejemplo'))
       : null,
     h('div', { class: 'steps' },
       step(1, agents.length > 0, 'Conecta tu agente', 'Dónde está (URL) y cómo se le habla. Sirve un webhook de n8n, un endpoint propio o la API de un modelo.', '#/agentes', agents.length ? `${agents.length} agente(s)` : 'Conectar agente'),
@@ -190,7 +190,7 @@ async function pageAgentForm(id) {
   const templates = id ? [] : await api('/plantillas-agente');
   const a = id ? await api(`/agentes/${id}`) : {
     name: '', url: '', method: 'POST', headers: {}, bodyTemplate: '{ "input": "{{input}}" }',
-    responsePath: 'output', contextPath: '', toolsPath: '', timeoutSeconds: 120,
+    responsePath: 'output', contextPath: '', toolsPath: '', tokensPath: '', timeoutSeconds: 120,
   };
   let headers = Object.entries(a.headers || {});
   let testInput = '';
@@ -200,7 +200,7 @@ async function pageAgentForm(id) {
     name: a.name, url: a.url, method: a.method,
     headers: Object.fromEntries(headers.filter(([k]) => k.trim())),
     bodyTemplate: a.bodyTemplate, responsePath: a.responsePath, contextPath: a.contextPath, toolsPath: a.toolsPath,
-    timeoutSeconds: Number(a.timeoutSeconds) || 120,
+    tokensPath: a.tokensPath, timeoutSeconds: Number(a.timeoutSeconds) || 120,
   });
 
   const bind = (key, attrs = {}) => h(attrs.multiline ? 'textarea' : 'input', {
@@ -233,7 +233,8 @@ async function pageAgentForm(id) {
           r.output ? h('div', { class: 'text-block' }, r.output) : h('div', { class: 'notice warn' }, 'La ruta de la respuesta no encontró nada. Revisa "Dónde viene la respuesta" con el JSON completo de abajo.'),
           a.contextPath ? h('p', null, h('strong', null, `Documentos recuperados: ${r.context.length}`), r.context.length ? null : h('span', { class: 'muted' }, ' (la ruta no encontró documentos)')) : null,
           r.context.length ? h('details', null, h('summary', null, 'Ver documentos'), r.context.map((c) => h('pre', null, c))) : null,
-          a.toolsPath ? h('p', null, h('strong', null, 'Herramientas: '), r.tools.length ? r.tools.join(', ') : h('span', { class: 'muted' }, 'ninguna')) : null) : null,
+          a.toolsPath ? h('p', null, h('strong', null, 'Herramientas: '), r.tools.length ? r.tools.join(', ') : h('span', { class: 'muted' }, 'ninguna')) : null,
+          a.tokensPath ? h('p', null, h('strong', null, 'Tokens: '), r.tokens ?? h('span', { class: 'muted' }, 'la ruta no encontró tokens')) : null) : null,
         h('details', null, h('summary', null, 'Lo que se envió'), h('pre', null, r.requestBody || '(sin cuerpo)')),
         r.raw ? h('details', { open: !r.ok || !r.output }, h('summary', null, 'Respuesta completa del agente'), h('pre', null, pretty(r.raw))) : null);
     } catch (e) {
@@ -271,7 +272,9 @@ async function pageAgentForm(id) {
       field('Dónde viene la respuesta', bind('responsePath', { placeholder: 'output (vacío = toda la respuesta)' })),
       h('div', { class: 'grid-2' },
         field('Dónde vienen los documentos recuperados (opcional, RAG)', bind('contextPath', { placeholder: 'intermediateSteps[*].observation' }), 'Necesario para las comparaciones de base de conocimiento.'),
-        field('Dónde vienen las herramientas usadas (opcional)', bind('toolsPath', { placeholder: 'intermediateSteps[*].action.tool' }), 'Necesario para "Usó las herramientas".'))),
+        field('Dónde vienen las herramientas usadas (opcional)', bind('toolsPath', { placeholder: 'intermediateSteps[*].action.tool' }), 'Necesario para "Usó las herramientas".')),
+      field('Dónde vienen los tokens consumidos (opcional)', bind('tokensPath', { placeholder: 'usage.total_tokens' }),
+        'Varias rutas separadas por coma se suman (ej. usage.input_tokens, usage.output_tokens). El webhook de n8n no los devuelve por defecto.')),
     h('div', { class: 'card' },
       h('h3', null, 'Probar la conexión'),
       field('Escribe una entrada de ejemplo', h('textarea', { rows: 2, style: { fontFamily: 'inherit', fontSize: '15px', minHeight: '0' }, placeholder: 'Ej. No puedo entrar, me dice que mi usuario está bloqueado', oninput: (e) => (testInput = e.target.value) })),
@@ -293,7 +296,7 @@ async function pageAgentForm(id) {
       h('div', { class: 'templates' }, templates.map((t) => h('button', {
         class: 'template', type: 'button',
         onclick: () => {
-          Object.assign(a, { ...t.agent, contextPath: t.agent.contextPath || '', toolsPath: t.agent.toolsPath || '' });
+          Object.assign(a, { ...t.agent, contextPath: t.agent.contextPath || '', toolsPath: t.agent.toolsPath || '', tokensPath: t.agent.tokensPath || '' });
           headers = Object.entries(t.agent.headers || {});
           draw();
           toast(`Plantilla "${t.name}" aplicada: ajusta la URL`);
@@ -331,7 +334,8 @@ function pageDatasetNew() {
   const draw = () => {
     const tabs = h('div', { class: 'tabs' },
       h('button', { class: tab === 'archivo' ? 'active' : '', onclick: () => { tab = 'archivo'; draw(); } }, 'Subir archivo (Excel o CSV)'),
-      h('button', { class: tab === 'enlace' ? 'active' : '', onclick: () => { tab = 'enlace'; draw(); } }, 'Enlace de Google Sheets'));
+      h('button', { class: tab === 'enlace' ? 'active' : '', onclick: () => { tab = 'enlace'; draw(); } }, 'Enlace de Google Sheets'),
+      h('button', { class: tab === 'generar' ? 'active' : '', onclick: () => { tab = 'generar'; draw(); } }, 'Generar con IA'));
     const name = h('input', { type: 'text', placeholder: 'Ej. Tickets de soporte de octubre' });
 
     if (tab === 'archivo') {
@@ -353,6 +357,40 @@ function pageDatasetNew() {
             } catch (e) { toast(e.message, true); }
           },
         }, 'Cargar casos'));
+    } else if (tab === 'generar') {
+      const area = (placeholder, rows) => h('textarea', { rows, placeholder, style: { fontFamily: 'inherit', fontSize: '15px' } });
+      const description = area('Ej.: Agente de soporte de primer nivel de un software contable. Responde dudas de facturación electrónica, nómina e inventario con la base de conocimiento. Si es un error técnico o requiere cambiar datos de la empresa, crea un ticket para segundo nivel.', 4);
+      const tools = area('Una por línea. Ej.:\nbuscar_base_conocimiento\ncrear_ticket\nenviar_correo', 3);
+      const knowledge = area('Opcional: pega preguntas frecuentes, políticas o partes del manual para que los casos usen datos reales.', 5);
+      const count = h('input', { type: 'number', min: 3, max: 50, value: 20 });
+      const button = h('button', {
+        class: 'primary',
+        disabled: !catalog.estado.juezConfigurado,
+        onclick: async () => {
+          button.disabled = true;
+          button.textContent = 'Generando… (puede tardar un minuto)';
+          try {
+            const r = await api('/datasets/generar', { method: 'POST', body: { name: name.value, description: description.value, tools: tools.value, knowledge: knowledge.value, count: Number(count.value) } });
+            toast(`Se generaron ${r.rowCount} casos. Revísalos antes de usarlos.`);
+            go(`#/casos/${r.id}`);
+          } catch (e) {
+            toast(e.message, true);
+            button.disabled = false;
+            button.textContent = 'Generar casos';
+          }
+        },
+      }, 'Generar casos');
+      replace(body, tabs,
+        catalog.estado.juezConfigurado
+          ? h('div', { class: 'notice info small' }, 'El modelo arma un primer borrador con preguntas frecuentes, casos límite y casos que el agente debe escalar o rechazar. Revísalo: descárgalo en Excel, corrige lo que no esté bien y vuelve a subirlo (o pásalo a un Google Sheet).')
+          : h('div', { class: 'notice warn' }, 'Para generar casos con IA hay que configurar el juez IA en el servidor (ver README, sección "Juez IA").'),
+        field('Nombre', name),
+        field('Qué hace el agente', description),
+        h('div', { class: 'grid-2' },
+          field('Herramientas que puede usar', tools),
+          field('Cantidad de casos', count, 'Entre 3 y 50.')),
+        field('Información que tiene disponible', knowledge),
+        button);
     } else {
       const url = h('input', { type: 'url', placeholder: 'https://docs.google.com/spreadsheets/d/…' });
       replace(body, tabs,
@@ -396,6 +434,7 @@ async function pageDataset(id) {
   render(
     pageHead(d.name, `${d.rows.length} casos · ${d.sourceUrl ? 'desde enlace' : d.sourceFileName || 'archivo'} · actualizado ${fmtDate(d.updatedAt)}`,
       h('a', { class: 'button primary', href: `#/evaluaciones/nueva?dataset=${id}` }, 'Crear evaluación con estos casos'),
+      h('a', { class: 'button', href: `/api/datasets/${id}/excel` }, 'Descargar Excel'),
       d.sourceUrl ? h('button', {
         onclick: async () => {
           try { const r = await api(`/datasets/${id}/recargar`, { method: 'POST' }); toast(`Recargado: ${r.rowCount} casos`); route(); } catch (e) { toast(e.message, true); }
@@ -419,9 +458,14 @@ async function pageDataset(id) {
 
 // ---------- Evaluaciones ----------
 
-async function runEvaluation(id) {
+// askNote: pregunta qué cambió antes de ejecutar (para comparar el antes y el después).
+async function runEvaluation(id, { askNote = true, note } = {}) {
+  if (note === undefined && askNote) {
+    note = prompt('¿Qué cambiaste desde la última corrida? (opcional)\nEj.: "prompt v2 con árbol de decisión", "temperatura 0.2", "agregué el manual de nómina"', '');
+    if (note === null) return;
+  }
   try {
-    const r = await api(`/evaluaciones/${id}/ejecutar`, { method: 'POST' });
+    const r = await api(`/evaluaciones/${id}/ejecutar`, { method: 'POST', body: { note: note || null } });
     go(`#/resultados/${r.runId}`);
   } catch (e) {
     toast(e.message, true);
@@ -449,10 +493,10 @@ async function pageEvaluation(id) {
   const agent = agents.find((a) => a.id === e.agentId);
   const dataset = datasets.find((d) => d.id === e.datasetId);
   const completed = runs.filter((r) => r.status === 'Completed');
+  const noteInput = h('input', { type: 'text', placeholder: 'Ej.: prompt v2 con árbol de decisión, temperatura 0.2, agregué el manual de nómina' });
 
   render(
     pageHead(e.name, null,
-      h('button', { class: 'primary', onclick: () => runEvaluation(id) }, '▶ Ejecutar ahora'),
       h('a', { class: 'button', href: `#/evaluaciones/${id}/editar` }, 'Editar'),
       h('button', { class: 'danger', onclick: () => confirmAndDelete('¿Eliminar esta evaluación y todas sus corridas?', `/evaluaciones/${id}`, '#/evaluaciones') }, 'Eliminar')),
     h('div', { class: 'card' },
@@ -467,18 +511,25 @@ async function pageEvaluation(id) {
           c.blocking ? null : h('span', { class: 'badge skip', style: { marginLeft: '6px' } }, 'informativa'));
       })),
       e.repetitions > 1 ? h('p', { class: 'muted small' }, `Cada caso se ejecuta ${e.repetitions} veces.`) : null),
+    h('div', { class: 'card' },
+      h('label', null, '¿Qué cambiaste desde la última corrida? (opcional)'),
+      h('div', { class: 'kv-row', style: { marginBottom: 0 } },
+        noteInput,
+        h('button', { class: 'primary', onclick: () => runEvaluation(id, { note: noteInput.value }) }, '▶ Ejecutar ahora')),
+      h('div', { class: 'help' }, 'Queda en el historial para comparar el antes y el después de cada cambio.')),
     h('h2', null, 'Historial'),
     completed.length > 1 ? trendBars(completed.slice(0, 12).reverse()) : null,
     h('div', { class: 'table-wrap' }, h('table', null,
-      h('thead', null, h('tr', null, h('th', null, 'Corrida'), h('th', null, 'Fecha'), h('th', null, 'Estado'), h('th', null, 'Aprobados'), h('th', null, 'Fallidos'), h('th', null, 'Errores'))),
+      h('thead', null, h('tr', null, h('th', null, 'Corrida'), h('th', null, 'Fecha'), h('th', null, 'Qué cambió'), h('th', null, 'Estado'), h('th', null, 'Aprobados'), h('th', null, 'Fallidos'), h('th', null, 'Errores'))),
       h('tbody', null, runs.length ? runs.map((r) =>
         h('tr', { class: 'clickable', onclick: () => go(`#/resultados/${r.id}`) },
           h('td', null, `#${r.id}`),
           h('td', { class: 'muted' }, fmtDate(r.createdAt)),
+          h('td', { class: 'cell-clip', title: r.note || '' }, r.note || h('span', { class: 'muted' }, '—')),
           h('td', null, runStatusBadge(r.status)),
           h('td', null, `${r.passed} (${pct(r.passRate)})`),
           h('td', null, r.failed),
-          h('td', null, r.errors))) : emptyRow(6, 'Todavía no se ha ejecutado.')))));
+          h('td', null, r.errors))) : emptyRow(7, 'Todavía no se ha ejecutado.')))));
 }
 
 function trendBars(runs) {
@@ -486,7 +537,7 @@ function trendBars(runs) {
     h('div', { class: 'small muted', style: { marginBottom: '8px' } }, '% de casos aprobados en las últimas corridas'),
     h('div', { style: { display: 'flex', alignItems: 'flex-end', gap: '6px', height: '90px' } },
       runs.map((r) => h('a', {
-        href: `#/resultados/${r.id}`, title: `#${r.id} · ${pct(r.passRate)} · ${fmtDate(r.createdAt)}`,
+        href: `#/resultados/${r.id}`, title: `#${r.id} · ${pct(r.passRate)} · ${fmtDate(r.createdAt)}${r.note ? ` · ${r.note}` : ''}`,
         style: { flex: '1', maxWidth: '48px', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'flex-end', height: '100%', textDecoration: 'none' },
       },
       h('span', { class: 'small muted' }, pct(r.passRate)),
@@ -539,7 +590,14 @@ async function pageEvaluationForm(id) {
         h('span', { class: 'badge info' }, i + 1),
         h('select', {
           'aria-label': 'Tipo de comparación',
-          onchange: (ev) => { c.type = ev.target.value; c.threshold = null; draw(); },
+          onchange: (ev) => {
+            c.type = ev.target.value;
+            c.threshold = null;
+            // Lo esperado solo aplica a los tipos que lo usan.
+            if (!checkInfo(c.type)?.needsExpected) { c.expectedColumn = null; c.expectedValue = null; }
+            else if (!c.expectedColumn && !c.expectedValue) c.expectedColumn = columnsOf()[0] || null;
+            draw();
+          },
         }, families.map(([fam, label]) => h('optgroup', { label },
           catalog.checkTypes.filter((t) => t.family === fam).map((t) => h('option', { value: t.type, selected: t.type === c.type }, t.label))))),
         h('button', { type: 'button', class: 'link', title: 'Subir', disabled: i === 0, onclick: () => { e.checks.splice(i - 1, 0, e.checks.splice(i, 1)[0]); draw(); } }, '↑'),
@@ -580,7 +638,7 @@ async function pageEvaluationForm(id) {
     try {
       const saved = id ? await api(`/evaluaciones/${id}`, { method: 'PUT', body }) : await api('/evaluaciones', { method: 'POST', body });
       toast('Evaluación guardada');
-      if (andRun) runEvaluation(saved.id);
+      if (andRun) runEvaluation(saved.id, { askNote: !!id });
       else go(`#/evaluaciones/${saved.id}`);
     } catch (err) {
       toast(err.message, true);
@@ -618,7 +676,7 @@ async function pageEvaluationForm(id) {
       e.checks.map(checkCard),
       e.checks.length ? null : h('div', { class: 'notice info' }, 'Agrega al menos una comparación.'),
       h('div', { class: 'actions', style: { marginBottom: '24px' } },
-        h('button', { type: 'button', onclick: () => { e.checks.push({ type: 'contiene', expectedColumn: cols[0] || null, blocking: true }); draw(); } }, '+ Agregar comparación'),
+        h('button', { type: 'button', onclick: () => { e.checks.push({ type: 'contiene', expectedColumn: cols.find((c) => c !== e.inputColumn) || cols[0] || null, blocking: true }); draw(); } }, '+ Agregar comparación'),
         h('button', { type: 'button', class: 'link', onclick: () => { const s = suggestChecks(cols); if (!s.length) return toast('No encontré columnas reconocibles (respuesta_esperada, debe_contener, criterio…)', true); e.checks = s; draw(); } }, 'Sugerir según las columnas')),
       h('div', { class: 'actions' },
         h('button', { class: 'primary', onclick: () => save(true) }, 'Guardar y ejecutar'),
@@ -674,6 +732,7 @@ async function pageRun(id) {
         !active ? h('a', { class: 'button', href: `/api/corridas/${id}/excel` }, 'Descargar Excel') : null,
         h('button', { onclick: () => runEvaluation(run.evaluationId) }, '▶ Ejecutar de nuevo'),
         h('a', { class: 'button', href: `#/evaluaciones/${run.evaluationId}` }, 'Ver evaluación')),
+      run.note ? h('div', { class: 'notice info' }, h('strong', null, 'Qué cambió en esta corrida: '), run.note) : null,
       active ? h('div', { class: 'card' },
         h('strong', null, run.status === 'Queued' ? 'En cola…' : `Ejecutando: ${run.completed} de ${run.total} casos`),
         h('div', { class: 'progress' }, h('span', { style: { width: `${run.total ? (run.completed / run.total) * 100 : 0}%` } }))) : null,
@@ -685,6 +744,10 @@ async function pageRun(id) {
         h('div', { class: `stat ${summary.failed ? 'bad' : ''}` }, h('div', { class: 'value' }, summary.failed), h('div', { class: 'label' }, 'fallidos')),
         h('div', { class: `stat ${summary.errors ? 'warn' : ''}` }, h('div', { class: 'value' }, summary.errors), h('div', { class: 'label' }, 'con error (no se pudo evaluar)')),
         h('div', { class: 'stat' }, h('div', { class: 'value' }, `${(summary.averageLatencyMs / 1000).toFixed(1)} s`), h('div', { class: 'label' }, 'tiempo promedio de respuesta')),
+        summary.averageTokens != null ? h('div', { class: 'stat' },
+          h('div', { class: 'value' }, Math.round(summary.averageTokens).toLocaleString('es')),
+          h('div', { class: 'label' }, 'tokens promedio por caso',
+            summary.previousAverageTokens != null ? ` (${summary.averageTokens <= summary.previousAverageTokens ? '' : '+'}${Math.round(((summary.averageTokens - summary.previousAverageTokens) / summary.previousAverageTokens) * 100)}% vs anterior)` : null)) : null,
         summary.casesPassingAllAttempts != null ? h('div', { class: 'stat' }, h('div', { class: 'value' }, `${summary.casesPassingAllAttempts}/${summary.cases}`), h('div', { class: 'label' }, 'casos que pasaron en todas las repeticiones')) : null,
         delta != null ? h('div', { class: `stat ${delta > 0 ? 'ok' : delta < 0 ? 'bad' : ''}` },
           h('div', { class: 'value' }, `${delta > 0 ? '+' : ''}${delta} pts`),
@@ -748,7 +811,8 @@ function caseDetail(r) {
           h('div', null, c.reason),
           c.expected ? h('div', { class: 'small muted' }, 'Esperado: ', c.expected) : null))))) : null,
     r.context.length ? h('details', null, h('summary', null, `Documentos recuperados (${r.context.length})`), r.context.map((c) => h('pre', null, c))) : null,
-    r.tools.length ? h('p', null, h('strong', null, 'Herramientas usadas: '), r.tools.join(', ')) : null,
+    r.tools.length ? h('p', null, h('strong', null, 'Herramientas usadas: '), r.tools.join(' → ')) : null,
+    r.tokens != null ? h('p', null, h('strong', null, 'Tokens: '), r.tokens.toLocaleString('es')) : null,
     h('details', null, h('summary', null, 'Datos del caso'),
       h('table', { style: { marginTop: '6px' } }, h('tbody', null, Object.entries(r.row).map(([k, v]) => h('tr', null, h('th', { style: { width: '220px' } }, k), h('td', null, v)))))),
     r.rawResponse ? h('details', null, h('summary', null, 'Respuesta completa del agente'), h('pre', null, pretty(r.rawResponse))) : null);

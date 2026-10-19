@@ -6,8 +6,13 @@ namespace EvalPlatform.Tests;
 
 // Juez de mentira: responde con el formato <S0>/<S1>/<S2> que esperan los evaluadores.
 // El puntaje lo decide la función que recibe el prompt.
-public sealed class FakeJudgeClient(Func<string, int> score) : IChatClient
+public sealed class FakeJudgeClient(Func<string, string> respond) : IChatClient
 {
+    public FakeJudgeClient(Func<string, int> score)
+        : this(p => $"<S0>pensando</S0><S1>Puntaje {score(p)} del juez de prueba.</S1><S2>{score(p)}</S2>")
+    {
+    }
+
     public List<string> Prompts { get; } = [];
 
     public Task<ChatResponse> GetResponseAsync(IEnumerable<ChatMessage> messages, ChatOptions? options = null, CancellationToken cancellationToken = default)
@@ -17,8 +22,7 @@ public sealed class FakeJudgeClient(Func<string, int> score) : IChatClient
         {
             Prompts.Add(prompt);
         }
-        int s = score(prompt);
-        return Task.FromResult(new ChatResponse(new ChatMessage(ChatRole.Assistant, $"<S0>pensando</S0><S1>Puntaje {s} del juez de prueba.</S1><S2>{s}</S2>")));
+        return Task.FromResult(new ChatResponse(new ChatMessage(ChatRole.Assistant, respond(prompt))));
     }
 
     public IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(IEnumerable<ChatMessage> messages, ChatOptions? options = null, CancellationToken cancellationToken = default) =>

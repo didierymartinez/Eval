@@ -16,6 +16,7 @@ public sealed class AgentInvocation
     public string Output { get; init; } = "";
     public List<string> Context { get; init; } = [];
     public List<string> Tools { get; init; } = [];
+    public int? Tokens { get; init; }
     public long LatencyMs { get; init; }
     public string? Error { get; init; }
     public bool Succeeded => Error is null;
@@ -128,8 +129,28 @@ public sealed class AgentInvoker(IHttpClientFactory httpFactory)
                 Output = output,
                 Context = json is null || string.IsNullOrWhiteSpace(agent.ContextPath) ? [] : JsonPath.SelectTexts(json, agent.ContextPath),
                 Tools = json is null || string.IsNullOrWhiteSpace(agent.ToolsPath) ? [] : [.. JsonPath.Select(json, agent.ToolsPath).Select(JsonPath.ToText).Where(t => t.Length > 0)],
+                Tokens = json is null || string.IsNullOrWhiteSpace(agent.TokensPath) ? null : SumTokens(json, agent.TokensPath),
                 LatencyMs = stopwatch.ElapsedMilliseconds,
             };
         }
+    }
+
+    // Suma los números que encuentre en una o varias rutas separadas por coma.
+    private static int? SumTokens(JsonNode json, string paths)
+    {
+        int total = 0;
+        bool found = false;
+        foreach (string path in paths.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            foreach (JsonNode? node in JsonPath.Select(json, path))
+            {
+                if (double.TryParse(JsonPath.ToText(node), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out double n))
+                {
+                    total += (int)n;
+                    found = true;
+                }
+            }
+        }
+        return found ? total : null;
     }
 }

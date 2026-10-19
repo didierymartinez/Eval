@@ -20,6 +20,9 @@ public sealed class Agent
     public string? ContextPath { get; set; }
     public string? ToolsPath { get; set; }
 
+    // Tokens consumidos; varias rutas separadas por coma se suman (p. ej. "usage.input_tokens, usage.output_tokens").
+    public string? TokensPath { get; set; }
+
     public int TimeoutSeconds { get; set; } = 120;
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
 }
@@ -84,6 +87,9 @@ public sealed class Run
     public string AgentName { get; set; } = "";
     public string DatasetName { get; set; } = "";
 
+    // Qué cambió antes de esta corrida (prompt, modelo, temperatura…), para comparar el antes y el después.
+    public string? Note { get; set; }
+
     // Copia de las comparaciones usadas, para que cambiar la evaluación no altere corridas viejas.
     public List<CheckDefinition> Checks { get; set; } = [];
 
@@ -115,6 +121,7 @@ public sealed class RunResult
     public string? RawResponse { get; set; }
     public int? HttpStatus { get; set; }
     public long LatencyMs { get; set; }
+    public int? Tokens { get; set; }
     public CaseOutcome Outcome { get; set; }
     public string? Error { get; set; }
     public List<CheckResult> Checks { get; set; } = [];
