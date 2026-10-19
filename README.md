@@ -3,11 +3,26 @@
 Investigación y kit de inicio para evaluar prompts y agentes LLM contra un dataset de casos, al estilo de las evaluaciones de n8n pero directo contra tu código (C# u otro lenguaje) por URL.
 
 - **Investigación completa:** [`docs/investigacion-evals-llm.md`](docs/investigacion-evals-llm.md)
+- **Caso helpdesk con RAG en n8n** (¿la base de conocimiento alcanza para el primer nivel?): [`docs/evaluar-rag-helpdesk.md`](docs/evaluar-rag-helpdesk.md)
+
+## Caso helpdesk: cobertura de la base de conocimiento
+
+Manda cada ticket de `dataset/tickets.csv` al webhook de n8n y clasifica cada uno: *cubierto*, *brecha de conocimiento*, *alucinación*, *escaló sin necesidad*, etc.
+
+```bash
+cd promptfoo/helpdesk
+node mock-n8n.js &                                   # opcional: webhook simulado
+export N8N_WEBHOOK_URL=http://localhost:5678/webhook/helpdesk
+export ANTHROPIC_API_KEY=...                         # modelo juez
+npx promptfoo@0.124.1 eval --no-cache -o resultados.json
+node diagnostico.js resultados.json                  # capacidad N1 + diagnostico.csv
+```
 
 ## Qué hay aquí
 
 | Carpeta | Qué es |
 |---|---|
+| `dataset/tickets.csv` + `promptfoo/helpdesk/` | Eval de cobertura del RAG para el helpdesk (webhook de n8n) |
 | `dataset/casos.csv` | Los casos de prueba (lo que en n8n sería el Google Sheet). Lo usan los dos arneses |
 | `samples/AgentEndpoint/` | API ASP.NET mínima que expone `POST /eval/run` con un agente de mentira. Es la plantilla de lo que hay que agregarle a tu agente real |
 | `promptfoo/` | Arnés con [promptfoo](https://www.promptfoo.dev/): lee el CSV (o un Google Sheet), llama la URL y califica |
@@ -15,7 +30,7 @@ Investigación y kit de inicio para evaluar prompts y agentes LLM contra un data
 
 El caso `PED-006` falla a propósito (el agente de mentira no llama `actualizar_direccion`), para que veas cómo se reporta un fallo.
 
-## Probarlo
+## Probarlo (ejemplo general de agente con herramientas)
 
 Requisitos: .NET 10 SDK y Node.js 20+.
 

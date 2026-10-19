@@ -2,6 +2,8 @@
 
 Investigación y plan para evaluar si un prompt o un agente (en C# u otro lenguaje) hace lo que debe. Fecha: octubre de 2026.
 
+> Para el caso concreto de un agente de helpdesk con RAG detrás de un webhook de n8n, ver [evaluar-rag-helpdesk.md](evaluar-rag-helpdesk.md).
+
 ---
 
 ## 1. Respuesta corta

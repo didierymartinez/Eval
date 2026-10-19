@@ -5,3 +5,5 @@ node_modules/
 promptfoo/resultados*.json
 *.user
 .vs/
+promptfoo/helpdesk/resultados*.json
+promptfoo/helpdesk/diagnostico.csv

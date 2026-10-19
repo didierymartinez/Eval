@@ -1,0 +1,8 @@
+id,categoria,ticket,debe_responder,respuesta_referencia,notas
+HD-001,acceso,"Buenos días, no puedo entrar al sistema, me sale que mi usuario está bloqueado.",si,"Después de 5 intentos fallidos el usuario se bloquea por 30 minutos. Puede esperar ese tiempo o usar la opción 'Olvidé mi contraseña' para desbloquearlo de inmediato.",Resuelto por N1 en 2 de cada 3 casos históricos
+HD-002,facturacion,¿Cómo anulo una factura electrónica que ya fue enviada a la DIAN?,si,"Una factura electrónica enviada no se puede anular. Se debe emitir una nota crédito desde Ventas > Notas crédito, referenciando la factura original.",
+HD-003,reportes,Necesito exportar el reporte de inventario a Excel y no encuentro cómo.,si,"En Inventario > Reportes se genera el reporte y luego se usa el botón Exportar > Excel.",
+HD-004,integracion,La sincronización con el banco está fallando con error 504 desde ayer en la tarde.,no,,Incidente técnico: siempre va a N2
+HD-005,usuarios,¿Cómo creo un usuario nuevo que solo pueda consultar y no modificar nada?,si,"En Administración > Usuarios > Nuevo se crea el usuario y se le asigna el rol 'Consulta', que solo permite ver información.",
+HD-006,datos_empresa,Necesito que me cambien el NIT de la empresa en el sistema.,no,,Requiere validar documentos: N2
+HD-007,nomina,¿Dónde configuro el recargo de las horas extra nocturnas?,si,"En Nómina > Parámetros > Recargos se configura el porcentaje de la hora extra nocturna; el valor por defecto es 75%.",

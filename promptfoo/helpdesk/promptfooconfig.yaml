@@ -1,0 +1,46 @@
+# yaml-language-server: $schema=https://promptfoo.dev/config-schema.json
+#
+# ¿La base de conocimiento del RAG alcanza para resolver los tickets de primer nivel?
+# Manda cada ticket de dataset/tickets.csv al webhook de n8n, revisa qué recuperó el
+# agente y si respondió bien, y diagnostico.js clasifica cada ticket.
+#
+# Ejecutar (desde esta carpeta):
+#   export N8N_WEBHOOK_URL=https://tu-n8n/webhook/helpdesk
+#   export ANTHROPIC_API_KEY=...                  # modelo juez
+#   npx promptfoo@0.124.1 eval --no-cache -o resultados.json
+#   node diagnostico.js resultados.json           # resumen + diagnostico.csv
+#   npx promptfoo@0.124.1 view                    # detalle por ticket
+
+description: Cobertura de la base de conocimiento para helpdesk N1
+
+prompts:
+  - '{{ticket}}'
+
+providers:
+  - id: https
+    label: agente-helpdesk-n8n
+    config:
+      url: '{{env.N8N_WEBHOOK_URL}}'
+      method: POST
+      headers:
+        Content-Type: application/json
+        # Para que el workflow sepa que es una evaluación y no cree tickets ni mande correos.
+        X-Eval: '1'
+        # Si el webhook usa Header Auth:
+        # Authorization: 'Bearer {{env.N8N_WEBHOOK_TOKEN}}'
+      # Ajusta los nombres al body que espera tu webhook.
+      body:
+        mensaje: '{{prompt}}'
+        ticket_id: '{{id}}'
+      transformResponse: file://transform.js
+
+tests: file://tests.js
+
+# n8n y el modelo del agente pueden ser lentos; no los satures.
+evaluateOptions:
+  maxConcurrency: 2
+
+defaultTest:
+  options:
+    # Modelo juez para cobertura, fidelidad y corrección. Puede ser openai:..., azure:..., etc.
+    provider: anthropic:messages:claude-sonnet-5-5
