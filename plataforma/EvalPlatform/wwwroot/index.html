@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Evaluaciones de agentes</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 32 32%22%3E%3Crect width=%2232%22 height=%2232%22 rx=%228%22 fill=%22%232357d9%22/%3E%3Cpath d=%22M9 16.5l4.5 4.5L23 11%22 stroke=%22white%22 stroke-width=%223.2%22 fill=%22none%22 stroke-linecap=%22round%22 stroke-linejoin=%22round%22/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <div class="layout">
+    <nav class="sidebar" aria-label="Menú principal">
+      <a class="brand" href="#/">
+        <span class="brand-mark" aria-hidden="true">✓</span>
+        <span>Evaluaciones</span>
+      </a>
+      <a href="#/" data-nav="inicio">Inicio</a>
+      <a href="#/agentes" data-nav="agentes">1. Agentes</a>
+      <a href="#/casos" data-nav="casos">2. Casos de prueba</a>
+      <a href="#/evaluaciones" data-nav="evaluaciones">3. Evaluaciones</a>
+      <a href="#/resultados" data-nav="resultados">4. Resultados</a>
+      <div class="sidebar-foot" id="judge-status"></div>
+    </nav>
+    <main id="app" tabindex="-1"></main>
+  </div>
+  <div id="toast" role="status" aria-live="polite"></div>
+  <script src="app.js"></script>
+</body>
+</html>

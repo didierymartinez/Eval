@@ -1,0 +1,78 @@
+using System.Text.Json;
+using System.Text.Json.Serialization;
+using EvalPlatform.Api;
+using EvalPlatform.Data;
+using EvalPlatform.Services;
+using Microsoft.AspNetCore.Hosting.Server;
+using Microsoft.AspNetCore.Hosting.Server.Features;
+using Microsoft.EntityFrameworkCore;
+
+var builder = WebApplication.CreateBuilder(args);
+
+string connectionString = builder.Configuration.GetConnectionString("Eval") ?? "Data Source=datos/eval.db";
+EnsureSqliteFolder(connectionString, builder.Environment.ContentRootPath);
+
+builder.Services.AddDbContextFactory<EvalDbContext>(o => o.UseSqlite(connectionString));
+builder.Services.Configure<JudgeOptions>(builder.Configuration.GetSection("Juez"));
+builder.Services.Configure<RunnerOptions>(builder.Configuration.GetSection("Corridas"));
+
+// Sin límite global: cada agente define su propio tiempo máximo.
+builder.Services.AddHttpClient(AgentInvoker.HttpClientName, c => c.Timeout = Timeout.InfiniteTimeSpan);
+
+builder.Services.AddSingleton<IJudgeProvider, OpenAiCompatibleJudgeProvider>();
+builder.Services.AddSingleton<AgentInvoker>();
+builder.Services.AddSingleton<DatasetImporter>();
+builder.Services.AddSingleton<CheckRunner>();
+builder.Services.AddSingleton<RunQueue>();
+builder.Services.AddScoped<RunExecutor>();
+builder.Services.AddHostedService<RunWorker>();
+
+builder.Services.ConfigureHttpJsonOptions(o =>
+{
+    o.SerializerOptions.Converters.Add(new JsonStringEnumConverter());
+    o.SerializerOptions.Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping;
+});
+
+var app = builder.Build();
+
+await using (EvalDbContext db = await app.Services.GetRequiredService<IDbContextFactory<EvalDbContext>>().CreateDbContextAsync())
+{
+    await db.Database.EnsureCreatedAsync();
+}
+
+app.UseDefaultFiles();
+app.UseStaticFiles();
+app.MapEvalApi();
+
+// Agente de demostración para probar la plataforma sin conectar nada.
+if (app.Configuration.GetValue("Demo:Habilitado", true))
+{
+    app.MapPost("/demo/helpdesk", (JsonElement body) =>
+        DemoHelpdeskAgent.Respond(body.TryGetProperty("mensaje", out JsonElement m) ? m.GetString() ?? "" : ""));
+
+    if (app.Configuration.GetValue("Demo:CrearEjemplo", true))
+    {
+        app.Lifetime.ApplicationStarted.Register(() =>
+        {
+            string baseUrl = app.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()?.Addresses.FirstOrDefault() ?? "http://localhost:5080";
+            baseUrl = baseUrl.Replace("://+", "://localhost").Replace("://*", "://localhost").Replace("://0.0.0.0", "://localhost").Replace("://[::]", "://localhost");
+            using EvalDbContext db = app.Services.GetRequiredService<IDbContextFactory<EvalDbContext>>().CreateDbContext();
+            DemoSeeder.SeedAsync(db, baseUrl).GetAwaiter().GetResult();
+        });
+    }
+}
+
+app.Run();
+
+static void EnsureSqliteFolder(string connectionString, string contentRoot)
+{
+    var builder = new Microsoft.Data.Sqlite.SqliteConnectionStringBuilder(connectionString);
+    if (string.IsNullOrEmpty(builder.DataSource) || builder.DataSource == ":memory:")
+    {
+        return;
+    }
+    string path = Path.IsPathRooted(builder.DataSource) ? builder.DataSource : Path.Combine(contentRoot, builder.DataSource);
+    Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+}
+
+public partial class Program;

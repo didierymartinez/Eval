@@ -1,0 +1,137 @@
+namespace EvalPlatform.Domain;
+
+// Dónde está el agente y cómo hablarle. Cualquier cosa que responda por HTTP:
+// un webhook de n8n, un endpoint de C#, la API de un modelo, etc.
+public sealed class Agent
+{
+    public int Id { get; set; }
+    public string Name { get; set; } = "";
+    public string Url { get; set; } = "";
+    public string Method { get; set; } = "POST";
+
+    // Encabezados; los valores admiten {{columna}} y {{env:VARIABLE}} para no guardar secretos aquí.
+    public Dictionary<string, string> Headers { get; set; } = [];
+
+    // JSON con marcadores {{input}} y {{columna}} dentro de los textos.
+    public string BodyTemplate { get; set; } = """{ "input": "{{input}}" }""";
+
+    // Rutas dentro de la respuesta JSON (ver JsonPath). Vacía = todo el cuerpo.
+    public string ResponsePath { get; set; } = "";
+    public string? ContextPath { get; set; }
+    public string? ToolsPath { get; set; }
+
+    public int TimeoutSeconds { get; set; } = 120;
+    public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
+}
+
+// Los casos de prueba: una tabla con columnas libres (entrada, esperado, etc.).
+public sealed class Dataset
+{
+    public int Id { get; set; }
+    public string Name { get; set; } = "";
+
+    // Archivo subido o enlace (Google Sheets / CSV) desde el que se puede volver a cargar.
+    public string? SourceUrl { get; set; }
+    public string? SourceFileName { get; set; }
+
+    public List<string> Columns { get; set; } = [];
+    public List<Dictionary<string, string>> Rows { get; set; } = [];
+    public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
+}
+
+// Qué agente, con qué casos y qué se compara en cada caso.
+public sealed class Evaluation
+{
+    public int Id { get; set; }
+    public string Name { get; set; } = "";
+    public int AgentId { get; set; }
+    public int DatasetId { get; set; }
+
+    // Columna del dataset que se manda al agente como {{input}}.
+    public string InputColumn { get; set; } = "input";
+    public List<CheckDefinition> Checks { get; set; } = [];
+
+    // Veces que se corre cada caso (los LLM no responden siempre igual).
+    public int Repetitions { get; set; } = 1;
+    public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
+}
+
+public sealed class CheckDefinition
+{
+    public string Type { get; set; } = CheckTypes.Contains;
+    public string? Label { get; set; }
+
+    // De dónde sale lo esperado: una columna del dataset o un valor fijo.
+    public string? ExpectedColumn { get; set; }
+    public string? ExpectedValue { get; set; }
+
+    // Qué parte de la respuesta se compara. Vacío = la respuesta principal del agente.
+    public string? ResponsePath { get; set; }
+
+    public double? Threshold { get; set; }
+
+    // false = solo informativa: se mide y se muestra, pero no hace fallar el caso.
+    public bool Blocking { get; set; } = true;
+}
+
+public enum RunStatus { Queued, Running, Completed, Failed, Cancelled }
+
+public sealed class Run
+{
+    public int Id { get; set; }
+    public int EvaluationId { get; set; }
+    public string EvaluationName { get; set; } = "";
+    public string AgentName { get; set; } = "";
+    public string DatasetName { get; set; } = "";
+
+    // Copia de las comparaciones usadas, para que cambiar la evaluación no altere corridas viejas.
+    public List<CheckDefinition> Checks { get; set; } = [];
+
+    public RunStatus Status { get; set; } = RunStatus.Queued;
+    public string? Error { get; set; }
+    public int Total { get; set; }
+    public int Completed { get; set; }
+    public int Passed { get; set; }
+    public int Failed { get; set; }
+    public int Errors { get; set; }
+    public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
+    public DateTimeOffset? StartedAt { get; set; }
+    public DateTimeOffset? FinishedAt { get; set; }
+}
+
+public enum CaseOutcome { Passed, Failed, Error }
+
+public sealed class RunResult
+{
+    public long Id { get; set; }
+    public int RunId { get; set; }
+    public int RowIndex { get; set; }
+    public int Attempt { get; set; } = 1;
+    public Dictionary<string, string> Row { get; set; } = [];
+    public string Input { get; set; } = "";
+    public string? Output { get; set; }
+    public List<string> Context { get; set; } = [];
+    public List<string> Tools { get; set; } = [];
+    public string? RawResponse { get; set; }
+    public int? HttpStatus { get; set; }
+    public long LatencyMs { get; set; }
+    public CaseOutcome Outcome { get; set; }
+    public string? Error { get; set; }
+    public List<CheckResult> Checks { get; set; } = [];
+}
+
+public enum CheckStatus { Passed, Failed, Skipped, Error }
+
+public sealed class CheckResult
+{
+    public string Type { get; set; } = "";
+    public string Label { get; set; } = "";
+    public CheckStatus Status { get; set; }
+    public bool Blocking { get; set; } = true;
+
+    // Puntaje normalizado de 0 a 1 (si aplica) y cómo mostrarlo (p. ej. "4/5", "0.83").
+    public double? Score { get; set; }
+    public string? Display { get; set; }
+    public string? Expected { get; set; }
+    public string Reason { get; set; } = "";
+}

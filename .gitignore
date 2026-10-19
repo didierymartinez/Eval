@@ -7,3 +7,4 @@ promptfoo/resultados*.json
 .vs/
 promptfoo/helpdesk/resultados*.json
 promptfoo/helpdesk/diagnostico.csv
+plataforma/EvalPlatform/datos/

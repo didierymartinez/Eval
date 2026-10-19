@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="EvalPlatform.Tests/EvalPlatform.Tests.csproj" />
+  <Project Path="EvalPlatform/EvalPlatform.csproj" />
+</Solution>
