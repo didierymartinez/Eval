@@ -9,6 +9,7 @@ namespace EvalPlatform.Services;
 // para probar la plataforma sin conectar nada. La base de conocimiento es mínima y
 // la búsqueda es por palabras. Le falta a propósito cómo crear usuarios (HD-005) y
 // tiene datos de la empresa que lo hacen responder un caso que debía escalar (HD-006).
+// Con "base": "ampliada" suma el manual de usuarios, para comparar variantes de la base de conocimiento.
 public static class DemoHelpdeskAgent
 {
     private static readonly (string Source, string Text)[] s_knowledge =
@@ -20,12 +21,16 @@ public static class DemoHelpdeskAgent
         ("manual-empresa.pdf", "Los datos de la empresa como razón social, NIT y dirección se ven en Administración > Empresa."),
     ];
 
+    private static readonly (string Source, string Text) s_usersManual =
+        ("manual-usuarios.pdf", "Para crear un usuario nuevo vaya a Administración > Usuarios > Nuevo y asígnele el rol Consulta si solo debe consultar información sin modificar nada.");
+
     private static readonly HashSet<string> s_stopWords = ["que", "los", "las", "del", "por", "con", "una", "para", "como", "esta", "use"];
 
-    public static JsonObject Respond(string message)
+    public static JsonObject Respond(string message, string? knowledgeBase = null)
     {
         var query = Words(message).ToHashSet();
-        var documents = s_knowledge
+        var knowledge = knowledgeBase?.Trim().Equals("ampliada", StringComparison.OrdinalIgnoreCase) == true ? [.. s_knowledge, s_usersManual] : s_knowledge;
+        var documents = knowledge
             .Select(d => (d.Source, d.Text, Score: Words(d.Text).Count(query.Contains)))
             .Where(d => d.Score > 0)
             .OrderByDescending(d => d.Score)
@@ -70,8 +75,20 @@ public static class DemoSeeder
 {
     public const string HelpdeskAgentName = "Demo · agente de helpdesk simulado";
 
+    public const string HelpdeskEvaluationName = "Demo · ¿la base de conocimiento alcanza para N1?";
+
     // Las versiones anteriores llamaban a la demo "Demo · helpdesk simulado (…)"; se renombra al arrancar.
     private const string OldHelpdeskAgentPrefix = "Demo · helpdesk simulado (";
+
+    private const string OldHelpdeskBody = """{ "mensaje": "{{input}}", "ticket_id": "{{id}}" }""";
+    private const string HelpdeskBody = """{ "mensaje": "{{input}}", "ticket_id": "{{id}}", "base": "{{base}}" }""";
+
+    // Dos variantes de la base de conocimiento: la actual y la que suma el manual de usuarios.
+    private static List<Variant> HelpdeskVariants() =>
+    [
+        new() { Name = "Base actual", Parameters = new() { ["base"] = "actual" } },
+        new() { Name = "Base + manual de usuarios", Parameters = new() { ["base"] = "ampliada" } },
+    ];
 
     public static async Task SeedAsync(EvalDbContext db, string baseUrl)
     {
@@ -84,7 +101,26 @@ public static class DemoSeeder
         if (await db.Agents.AnyAsync(a => a.Name == HelpdeskAgentName))
         {
             await DemoMcpSeeder.SeedAsync(db, baseUrl);
+            await AddVariantsAsync(db);
         }
+    }
+
+    // Las bases creadas antes de las variantes reciben las de la demo, si nadie cambió el agente ni la evaluación.
+    private static async Task AddVariantsAsync(EvalDbContext db)
+    {
+        Agent? agent = await db.Agents.FirstOrDefaultAsync(a => a.Name == HelpdeskAgentName && a.BodyTemplate == OldHelpdeskBody);
+        if (agent is null)
+        {
+            return;
+        }
+        var evaluations = (await db.Evaluations.Where(e => e.AgentId == agent.Id).ToListAsync()).Where(e => e.Variants.Count == 0).ToList();
+        if (evaluations.FirstOrDefault(e => e.Name == HelpdeskEvaluationName) is not Evaluation demo)
+        {
+            return;
+        }
+        agent.BodyTemplate = HelpdeskBody;
+        demo.Variants = HelpdeskVariants();
+        await db.SaveChangesAsync();
     }
 
     private static async Task SeedHelpdeskAsync(EvalDbContext db, string baseUrl)
@@ -94,7 +130,7 @@ public static class DemoSeeder
         {
             Name = HelpdeskAgentName,
             Url = $"{baseUrl.TrimEnd('/')}/demo/helpdesk",
-            BodyTemplate = """{ "mensaje": "{{input}}", "ticket_id": "{{id}}" }""",
+            BodyTemplate = HelpdeskBody,
             ResponsePath = "output.respuesta",
             ContextPath = "intermediateSteps[*].observation",
             ToolsPath = "intermediateSteps[*].action.tool",
@@ -117,7 +153,7 @@ public static class DemoSeeder
 
         db.Evaluations.Add(new Evaluation
         {
-            Name = "Demo · ¿la base de conocimiento alcanza para N1?",
+            Name = HelpdeskEvaluationName,
             AgentId = agent.Id,
             DatasetId = dataset.Id,
             InputColumn = "ticket",
@@ -129,6 +165,7 @@ public static class DemoSeeder
                 new() { Type = CheckTypes.Groundedness, Blocking = false },
                 new() { Type = CheckTypes.Latency, Threshold = 15000 },
             ],
+            Variants = HelpdeskVariants(),
         });
         await db.SaveChangesAsync();
     }

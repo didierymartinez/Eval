@@ -121,7 +121,7 @@ public sealed class RunExecutor(
                 return;
             }
             Evaluation? e = await db.Evaluations.FindAsync([run.EvaluationId], cancellationToken);
-            Agent? a = e is null ? null : await db.Agents.FindAsync([e.AgentId], cancellationToken);
+            Agent? a = e is null ? null : await db.Agents.FindAsync([run.AgentId ?? e.AgentId], cancellationToken);
             Dataset? d = e is null ? null : await db.Datasets.FindAsync([e.DatasetId], cancellationToken);
             if (e is null || a is null || d is null)
             {
@@ -167,7 +167,7 @@ public sealed class RunExecutor(
                     Dictionary<string, string> row = dataset.Rows[c.Index];
                     string input = InputOf(evaluation, row);
                     string? traceId = agent.TracesEnabled ? traces.Register() : null;
-                    AgentInvocation invocation = await invoker.InvokeAsync(agent, input, row, ct, traceId);
+                    AgentInvocation invocation = await invoker.InvokeAsync(agent, input, Variant.Merge(row, run.Parameters), ct, traceId);
                     await TraceEnricher.ApplyAsync(traces, agent, invocation, ct);
                     RunResult result = await GradeAsync(run, agent, row, c.Index, c.Attempt, input, invocation, ct);
                     await recorder.RecordAsync(result, ct);

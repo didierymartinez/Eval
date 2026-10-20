@@ -272,6 +272,7 @@ pre {
   .sidebar-foot { display: none; }
   main { padding: 20px 16px 48px; }
   .grid-2, .grid-3 { grid-template-columns: 1fr; }
+  .cell-clip { max-width: 150px; }
 }
 
 .chips.nowrap { flex-wrap: nowrap; }

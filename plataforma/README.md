@@ -13,12 +13,30 @@ Aplicación web para comprobar, con casos reales, si un agente o un prompt respo
 
 La interfaz está en español y pensada para que soporte, negocio o QA puedan cargar casos y ejecutar evaluaciones sin tocar código.
 
+### Qué es: una plataforma con ejecutores
+
+Funciona como un servidor de CI con sus runners:
+
+| Pieza | Para qué | Dónde corre |
+|---|---|---|
+| **Plataforma** (este proyecto) | Guarda casos, evaluaciones, corridas e historial; califica las respuestas (comparaciones y juez IA); muestra y exporta los resultados | Un servidor de tu red |
+| **Ejecutores** | Llevan los casos a agentes que la plataforma no alcanza (otra red, otra tecnología). Solo hacen conexiones salientes | Junto al agente, en su red |
+| **Trazas OpenTelemetry** (opcional) | Que el agente informe tokens y pasos sin cambiar su respuesta | Dentro del agente: es instrumentación estándar |
+| **CLI para CI** (pendiente) | Lanzar una evaluación desde un pipeline y fallar si baja la calidad. Será un cliente de la misma API | En el pipeline o en el equipo del desarrollador |
+
+No se instala nada de evaluación dentro de los proyectos: la lógica, los resultados y el historial viven en la plataforma, y todos los equipos usan la misma.
+
+### Dos formas de usarla
+
+- **"¿Alcanza?"** (consultoría, soporte, negocio): un agente que ya existe, en una URL, y una pregunta de sí o no. Por ejemplo, ¿puede responder los tickets de nivel 1 con la documentación de la empresa? Se usa una evaluación con un solo agente y las comparaciones de RAG (*Los documentos traen la respuesta*, *Respaldada por los documentos*).
+- **"¿Cuál es mejor?"** (desarrollo): las mismas pruebas contra varias configuraciones del mismo agente: modelo grande o pequeño, prompt v1 o v2, más o menos documentos, con o sin RAG. Se usan las [variantes](#comparar-variantes), que corren todo de una vez y lo muestran lado a lado.
+
 ### El ciclo de trabajo
 
 1. Arma los casos: desde Google Sheets, Excel o CSV, o un borrador con **Generar con IA**.
 2. Ejecuta el agente con cada caso y mira las comparaciones de cada uno.
 3. Mejora el prompt, el modelo, las herramientas o los documentos.
-4. Vuelve a ejecutar con una nota de **qué cambiaste** y compara con la corrida anterior.
+4. Vuelve a ejecutar con una nota de **qué cambiaste** y compara con la corrida anterior. Para probar varias opciones a la vez, usa [variantes](#comparar-variantes).
 
 ## Arrancar
 
@@ -268,8 +286,11 @@ Devuelve una lista de casos (vacía si no hay; espera hasta `waitSeconds` antes 
 
 ```json
 [{ "taskId": 15, "runId": 3, "caseNumber": 1, "attempt": 1,
-   "input": "¿Cuánto debe el cliente 123?", "row": { "input": "...", "respuesta_esperada": "..." }, "agent": { ... } }]
+   "input": "¿Cuánto debe el cliente 123?", "row": { "input": "...", "respuesta_esperada": "..." }, "agent": { ... },
+   "traceId": null, "variant": "Modelo grande", "parameters": { "modelo": "gpt-5" } }]
 ```
+
+`variant` y `parameters` vienen cuando el caso es de una [variante](#comparar-variantes): usa los parámetros para configurar tu agente en ese caso. Si no, `variant` es `null`.
 
 Llama a tu agente con `input` (o con cualquier columna de `row`) y devuelve lo que respondió:
 
@@ -351,6 +372,47 @@ Un caso queda:
 Al ejecutar puedes escribir **qué cambiaste desde la última corrida** (prompt, modelo, temperatura, documentos nuevos en el RAG). Queda en el historial junto al porcentaje de aprobados. Cada corrida se compara con la anterior: puntos de diferencia, tokens promedio y la lista de casos que pasaron de fallido a aprobado o al revés. Cambia una cosa a la vez; si cambias prompt y modelo juntos, no sabrás cuál de los dos movió el resultado.
 
 Con **Repeticiones por caso** mayor que 1, cada caso se corre varias veces y el resumen muestra cuántos pasaron en todos los intentos. Los LLM no responden siempre igual, y un caso que pasa 2 de 3 veces es un riesgo en producción.
+
+## Comparar variantes
+
+Una **variante** es una configuración del agente que quieres comparar con otras sobre los mismos casos. Se definen en la evaluación (*Editar → Variantes a comparar*), y *⚖ Comparar las variantes* corre una corrida por variante, una tras otra. Después muestra:
+
+- un resumen por variante: % de aprobados, fallidos, errores, tiempo, tokens y llamadas al modelo, con la **mejor marcada** y una conclusión en palabras ("aprueba 86% frente a 71%; además gasta 30% menos tokens");
+- el % que pasó cada comparación en cada variante;
+- los casos uno al lado del otro, con un filtro **"solo donde cambia el resultado"** y las respuestas de cada variante juntas;
+- descarga en Excel con una columna por variante.
+
+Cada variante es el agente de la evaluación (u otro agente) con **parámetros**. Los parámetros llegan a la configuración del agente como `{{nombre}}`, igual que las columnas del caso:
+
+```json
+{
+  "model": "{{modelo}}",
+  "temperature": "{{json:temperatura}}",
+  "messages": [
+    { "role": "system", "content": "{{prompt_sistema}}" },
+    { "role": "user", "content": "{{input}}" }
+  ]
+}
+```
+
+| Variante | modelo | temperatura | prompt_sistema |
+|---|---|---|---|
+| A. Actual | gpt-5-mini | 0.7 | Eres un asistente de soporte… |
+| B. Modelo grande | gpt-5 | 0.7 | Eres un asistente de soporte… |
+| C. Prompt v2 | gpt-5-mini | 0.2 | Eres un agente de soporte N1. Si la respuesta no está en los documentos, escala… |
+
+- `{{json:nombre}}` mete el valor como JSON (número, booleano u objeto) en vez de texto. Así `"0.2"` llega como `0.2`; si el parámetro está vacío, llega `null`.
+- **Tu propio endpoint** decide qué hace con cada parámetro: por ejemplo `{ "input": "{{input}}", "modelo": "{{modelo}}", "top_k": "{{json:top_k}}", "usar_rag": "{{json:rag}}" }`. Así se comparan cosas que la plataforma no conoce, como más contexto, otro índice vectorial o con y sin RAG.
+- **MCP con un modelo:** los parámetros se pueden usar en el modelo, el endpoint del modelo, el prompt de sistema y las herramientas permitidas. Un parámetro `temperatura` reemplaza la temperatura del agente.
+- **Ejecutores:** cada caso trae `variant` y `parameters`. El ejecutor genérico los aplica a la configuración del agente. En tu propio código llegan como argumento (en `ejecutor.py`, `ejecutar_agente(..., parametros)`).
+- **Otro agente** en una variante sirve para comparar proveedores distintos, por ejemplo la plantilla de OpenAI contra la de Anthropic.
+- Si un parámetro se llama igual que una columna del caso, gana el parámetro.
+
+La plataforma rechaza las variantes que no cambiarían nada: un parámetro que el agente no usa (salvo en agentes de código propio), dos variantes iguales o dos con el mismo nombre. Así una comparativa nunca sale "igual" por un error de configuración.
+
+Para un **antes y después** sin variantes, marca dos o más corridas en el historial de la evaluación y usa *Comparar seleccionadas*.
+
+La demo incluye dos variantes de la base de conocimiento, «Base actual» y «Base + manual de usuarios». Compararlas muestra que el ticket de crear usuarios solo se responde con el manual nuevo.
 
 ## Configuración
 

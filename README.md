@@ -9,6 +9,13 @@ Aplicación web en español, para técnicos y no técnicos:
 - **Conectas el agente:** un endpoint o webhook (C#, Java, Python…), la API de un modelo, un servidor MCP por HTTP, o tu propio código.
 - **Subes los casos:** Excel, CSV o Google Sheets.
 - **Eliges qué comparar y ejecutas.** Ves qué pasó y qué falló con su motivo, la comparación con la corrida anterior, y puedes descargar el resultado en Excel.
+- **Comparas variantes:** los mismos casos con otro modelo, otro prompt, más o menos contexto, o con y sin RAG, lado a lado y con la mejor marcada.
+
+Sirve para dos preguntas:
+- **"¿Alcanza?"** Por ejemplo, ¿este agente responde los tickets de nivel 1 con la documentación que tiene?
+- **"¿Cuál es mejor?"** Por ejemplo, ¿modelo grande o pequeño, prompt v1 o v2, con o sin RAG?
+
+Es una **plataforma** (servidor web con su base de datos) con **ejecutores** que se despliegan junto a los agentes que no puede alcanzar. Todavía falta una **CLI** para CI, que será un cliente de la misma API. No se instala nada de evaluación dentro de los proyectos.
 
 Si el agente vive en una red privada o no se expone por HTTP, un **ejecutor** dentro de esa red lleva los casos al agente. El ejecutor puede ser el de la plataforma o unas líneas de código en la tecnología del equipo. Solo hace conexiones salientes.
 

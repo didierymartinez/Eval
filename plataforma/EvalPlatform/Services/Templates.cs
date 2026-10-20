@@ -5,6 +5,8 @@ using System.Text.RegularExpressions;
 namespace EvalPlatform.Services;
 
 // Reemplaza {{columna}}, {{input}} y {{env:VARIABLE}} en URL, encabezados y cuerpo.
+// En el cuerpo JSON, un texto que es solo "{{json:nombre}}" se reemplaza por el valor como JSON
+// (número, booleano, objeto): sirve para "temperature": "{{json:temperatura}}".
 public static partial class Templates
 {
     public static string RenderText(string template, IReadOnlyDictionary<string, string> vars, Func<string, string>? escape = null) =>
@@ -37,8 +39,11 @@ public static partial class Templates
         return Render(root, vars)?.ToJsonString() ?? "null";
     }
 
-    public static IEnumerable<string> Placeholders(string template) =>
-        Placeholder().Matches(template).Select(m => m.Groups["name"].Value.Trim());
+    // Nombres usados en la plantilla, sin {{env:...}}.
+    public static IEnumerable<string> Placeholders(string? template) =>
+        string.IsNullOrEmpty(template)
+            ? []
+            : Placeholder().Matches(template).Where(m => m.Groups["prefix"].Value != "env:").Select(m => m.Groups["name"].Value.Trim());
 
     private static JsonNode? Render(JsonNode? node, IReadOnlyDictionary<string, string> vars)
     {
@@ -59,22 +64,47 @@ public static partial class Templates
                 }
                 return newArray;
             case JsonValue value when value.TryGetValue(out string? text):
-                return JsonValue.Create(RenderText(text, vars));
+                return TryRawJson(text, vars, out JsonNode? raw) ? raw : JsonValue.Create(RenderText(text, vars));
             default:
                 return node?.DeepClone();
         }
     }
 
+    // "{{json:nombre}}" como texto completo: el valor entra como JSON (vacío = null; si no es JSON, como texto).
+    private static bool TryRawJson(string text, IReadOnlyDictionary<string, string> vars, out JsonNode? node)
+    {
+        node = null;
+        Match match = Placeholder().Match(text);
+        if (!match.Success || match.Length != text.Length || match.Groups["prefix"].Value != "json:")
+        {
+            return false;
+        }
+        string value = Resolve(match, vars).Trim();
+        if (value.Length == 0)
+        {
+            return true;
+        }
+        try
+        {
+            node = JsonNode.Parse(value);
+        }
+        catch (JsonException)
+        {
+            node = JsonValue.Create(value);
+        }
+        return true;
+    }
+
     private static string Resolve(Match match, IReadOnlyDictionary<string, string> vars)
     {
         string name = match.Groups["name"].Value.Trim();
-        if (match.Groups["env"].Success)
+        if (match.Groups["prefix"].Value == "env:")
         {
             return Environment.GetEnvironmentVariable(name) ?? "";
         }
         return vars.TryGetValue(name, out string? value) ? value : "";
     }
 
-    [GeneratedRegex(@"\{\{\s*(?<env>env:)?(?<name>[^{}]+?)\s*\}\}")]
+    [GeneratedRegex(@"\{\{\s*(?<prefix>env:|json:)?(?<name>[^{}]+?)\s*\}\}")]
     private static partial Regex Placeholder();
 }

@@ -243,7 +243,7 @@ public sealed class McpFlowTests : IDisposable
 
     private sealed class ScriptedModelFactory : IAgentModelFactory
     {
-        public IChatClient? Create(Agent agent) => new ScriptedModel();
+        public IChatClient? Create(McpSettings mcp) => new ScriptedModel();
     }
 
     // "Modelo" que decide las llamadas según la pregunta y responde con el último resultado.

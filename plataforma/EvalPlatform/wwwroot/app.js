@@ -117,6 +117,39 @@ function passRateBadge(run) {
   return h('span', { class: `badge ${cls}` }, `${pct(rate)} aprobados`);
 }
 
+// Parámetros de una variante, como "modelo = gpt-5-mini".
+function paramChips(params) {
+  const entries = Object.entries(params || {});
+  if (!entries.length) return null;
+  return h('span', { class: 'chips', style: { display: 'inline-flex', marginLeft: '6px', verticalAlign: 'middle' } },
+    entries.map(([k, v]) => h('span', { class: 'chip mono' }, `${k} = ${v}`)));
+}
+
+const variantLetter = (i) => String.fromCharCode(65 + i);
+
+// Marcadores {{nombre}} de la configuración de un agente (sin {{env:...}}).
+function agentPlaceholders(agent) {
+  if (!agent) return [];
+  const m = agent.mcp || {};
+  const kind = agent.kind || 'http';
+  const texts = [agent.url, ...Object.values(agent.headers || {}),
+    ...(kind === 'http' ? [agent.bodyTemplate] : []),
+    ...(kind === 'mcp' ? [m.toolTemplate, m.argumentsTemplate] : []),
+    ...(kind === 'mcp_modelo' ? [m.systemPrompt, m.modelName, m.modelEndpoint, m.allowedTools] : [])];
+  const names = new Set();
+  for (const t of texts) for (const match of String(t || '').matchAll(/\{\{\s*(?:json:)?([^{}:]+?)\s*\}\}/g)) names.add(match[1]);
+  return [...names];
+}
+
+async function compareEvaluation(id, note) {
+  try {
+    const r = await api(`/evaluaciones/${id}/comparar`, { method: 'POST', body: { note: note || null } });
+    go(`#/comparativas/${r.comparisonId}`);
+  } catch (e) {
+    toast(e.message, true);
+  }
+}
+
 async function confirmAndDelete(message, path, after) {
   if (!confirm(message)) return;
   try {
@@ -148,13 +181,14 @@ async function pageHome() {
       ? h('div', { class: 'notice info' },
           h('strong', null, '¿Primera vez? '),
           'Hay una evaluación de ejemplo lista con un agente de helpdesk simulado. ',
-          h('button', { class: 'primary', onclick: () => runEvaluation(demo.id, { askNote: false }) }, 'Ejecutar el ejemplo'))
+          h('button', { class: 'primary', onclick: () => runEvaluation(demo.id, { askNote: false }) }, 'Ejecutar el ejemplo'),
+          demo.variantCount >= 2 ? [' ', h('button', { onclick: () => compareEvaluation(demo.id, 'Base actual vs. base con el manual de usuarios') }, '⚖ Comparar dos bases de conocimiento')] : null)
       : null,
     h('div', { class: 'steps' },
       step(1, agents.length > 0, 'Conecta tu agente', 'Dónde está y cómo se le habla: un endpoint o webhook, la API de un modelo, un servidor MCP o tu propio código en la red del agente.', '#/agentes', agents.length ? `${agents.length} agente(s)` : 'Conectar agente'),
       step(2, datasets.length > 0, 'Sube los casos de prueba', 'Un Excel, CSV o Google Sheet con la entrada y lo que esperas en cada caso.', '#/casos', datasets.length ? `${datasets.length} grupo(s) de casos` : 'Subir casos'),
       step(3, evaluations.length > 0, 'Define qué comparar', 'Elige qué revisar en cada respuesta: que contenga algo, que sea correcta según un juez IA, que use los documentos…', '#/evaluaciones', evaluations.length ? `${evaluations.length} evaluación(es)` : 'Crear evaluación'),
-      step(4, runs.length > 0, 'Ejecuta y revisa', 'Mira qué casos pasaron, cuáles fallaron y por qué. Descarga el resultado en Excel.', '#/resultados', runs.length ? 'Ver resultados' : 'Aún no hay resultados')),
+      step(4, runs.length > 0, 'Ejecuta y revisa', 'Mira qué casos pasaron, cuáles fallaron y por qué. Compara variantes (modelo, prompt, base de conocimiento) lado a lado y descarga el resultado en Excel.', '#/resultados', runs.length ? 'Ver resultados' : 'Aún no hay resultados')),
     h('h2', null, 'Últimas corridas'),
     runsTable(runs));
 }
@@ -165,7 +199,7 @@ function runsTable(runs) {
     h('tbody', null, runs.length ? runs.map((r) =>
       h('tr', { class: 'clickable', onclick: () => go(`#/resultados/${r.id}`) },
         h('td', null, r.evaluationName),
-        h('td', { class: 'muted' }, r.agentName),
+        h('td', { class: 'muted' }, r.agentName, r.variant ? h('div', { class: 'small' }, `Variante: ${r.variant}`) : null),
         h('td', { class: 'muted' }, fmtDate(r.createdAt)),
         h('td', null, runStatusBadge(r.status)),
         h('td', null, r.status === 'Completed' || r.completed ? `${r.passed} de ${r.completed} aprobados` : '—'))) : emptyRow(5, 'Todavía no se ha ejecutado ninguna evaluación.'))));
@@ -731,12 +765,33 @@ async function pageEvaluations() {
 }
 
 async function pageEvaluation(id) {
-  const { evaluation: e, runs } = await api(`/evaluaciones/${id}`);
+  const { evaluation: e, runs, comparisons } = await api(`/evaluaciones/${id}`);
   const [agents, datasets] = await Promise.all([api('/agentes'), api('/datasets')]);
   const agent = agents.find((a) => a.id === e.agentId);
+  const agentName = (agentId) => agents.find((a) => a.id === agentId)?.name || '(agente borrado)';
   const dataset = datasets.find((d) => d.id === e.datasetId);
-  const completed = runs.filter((r) => r.status === 'Completed');
+  const completed = runs.filter((r) => r.status === 'Completed' && !r.variant);
   const noteInput = h('input', { type: 'text', placeholder: 'Ej.: prompt v2 con árbol de decisión, temperatura 0.2, agregué el manual de nómina' });
+  const variantSelect = e.variants.length
+    ? h('select', { 'aria-label': 'Variante', style: { maxWidth: '260px' } },
+        h('option', { value: '' }, 'Agente tal cual (sin variante)'),
+        e.variants.map((v) => h('option', { value: v.name }, `Variante: ${v.name}`)))
+    : null;
+  const selected = new Set();
+  const compareSelected = h('button', { disabled: true, onclick: () => go(`#/comparar?corridas=${[...selected].join(',')}`) }, '⚖ Comparar seleccionadas');
+  const refreshSelected = () => {
+    compareSelected.disabled = selected.size < 2;
+    compareSelected.textContent = selected.size ? `⚖ Comparar seleccionadas (${selected.size})` : '⚖ Comparar seleccionadas';
+  };
+
+  const runOne = async () => {
+    try {
+      const r = await api(`/evaluaciones/${id}/ejecutar`, { method: 'POST', body: { note: noteInput.value || null, variant: variantSelect?.value || null } });
+      go(`#/resultados/${r.runId}`);
+    } catch (err) {
+      toast(err.message, true);
+    }
+  };
 
   render(
     pageHead(e.name, null,
@@ -753,26 +808,55 @@ async function pageEvaluation(id) {
           c.expectedColumn ? h('span', { class: 'muted' }, ` contra la columna "${c.expectedColumn}"`) : c.expectedValue ? h('span', { class: 'muted' }, ` contra "${c.expectedValue}"`) : null,
           c.blocking ? null : h('span', { class: 'badge skip', style: { marginLeft: '6px' } }, 'informativa'));
       })),
-      e.repetitions > 1 ? h('p', { class: 'muted small' }, `Cada caso se ejecuta ${e.repetitions} veces.`) : null),
+      e.repetitions > 1 ? h('p', { class: 'muted small' }, `Cada caso se ejecuta ${e.repetitions} veces.`) : null,
+      e.variants.length ? [
+        h('h3', { style: { marginTop: '14px' } }, 'Variantes'),
+        h('ul', null, e.variants.map((v, i) => h('li', null,
+          h('strong', null, `${variantLetter(i)}. ${v.name}`),
+          v.agentId ? h('span', { class: 'muted' }, ` · agente: ${agentName(v.agentId)}`) : null,
+          paramChips(v.parameters)))),
+      ] : null),
     h('div', { class: 'card' },
-      h('label', null, '¿Qué cambiaste desde la última corrida? (opcional)'),
-      h('div', { class: 'kv-row', style: { marginBottom: 0 } },
+      h('label', null, e.variants.length >= 2 ? '¿Qué estás probando? (opcional)' : '¿Qué cambiaste desde la última corrida? (opcional)'),
+      h('div', { class: 'kv-row', style: { marginBottom: 0, flexWrap: 'wrap' } },
         noteInput,
-        h('button', { class: 'primary', onclick: () => runEvaluation(id, { note: noteInput.value }) }, '▶ Ejecutar ahora')),
-      h('div', { class: 'help' }, 'Queda en el historial para comparar el antes y el después de cada cambio.')),
+        e.variants.length >= 2 ? h('button', { class: 'primary', onclick: () => compareEvaluation(id, noteInput.value) }, `⚖ Comparar las ${e.variants.length} variantes`) : null,
+        variantSelect,
+        h('button', { class: e.variants.length >= 2 ? '' : 'primary', onclick: runOne }, '▶ Ejecutar ahora')),
+      h('div', { class: 'help' }, e.variants.length >= 2
+        ? 'Comparar corre los mismos casos con cada variante y los muestra lado a lado. «Ejecutar ahora» corre una sola configuración.'
+        : ['Queda en el historial para comparar el antes y el después de cada cambio. Para probar varias configuraciones a la vez (modelo, prompt, base de conocimiento), agrega ',
+           h('a', { href: `#/evaluaciones/${id}/editar` }, 'variantes'), '.'])),
+    comparisons.length ? [
+      h('h2', null, 'Comparativas'),
+      h('div', { class: 'table-wrap' }, h('table', null,
+        h('thead', null, h('tr', null, h('th', null, 'Comparativa'), h('th', null, 'Fecha'), h('th', null, 'Qué se compara'), h('th', null, 'Variantes'))),
+        h('tbody', null, comparisons.map((c) =>
+          h('tr', { class: 'clickable', onclick: () => go(`#/comparativas/${c.id}`) },
+            h('td', null, `#${c.id}`),
+            h('td', { class: 'muted' }, fmtDate(c.createdAt)),
+            h('td', { class: 'cell-clip', title: c.note || '' }, c.note || h('span', { class: 'muted' }, '—')),
+            h('td', null, h('div', { class: 'chips' }, c.runs.map((r) => h('span', { class: 'chip' }, `${r.variant}: `, passRateBadge(r)))))))))),
+    ] : null,
     h('h2', null, 'Historial'),
     completed.length > 1 ? trendBars(completed.slice(0, 12).reverse()) : null,
+    runs.length > 1 ? h('div', { class: 'actions', style: { marginBottom: '10px' } }, compareSelected,
+      h('span', { class: 'small muted' }, 'Marca dos o más corridas para verlas lado a lado (por ejemplo, antes y después de un cambio).')) : null,
     h('div', { class: 'table-wrap' }, h('table', null,
-      h('thead', null, h('tr', null, h('th', null, 'Corrida'), h('th', null, 'Fecha'), h('th', null, 'Qué cambió'), h('th', null, 'Estado'), h('th', null, 'Aprobados'), h('th', null, 'Fallidos'), h('th', null, 'Errores'))),
+      h('thead', null, h('tr', null, h('th', null, ''), h('th', null, 'Corrida'), h('th', null, 'Fecha'), h('th', null, 'Qué cambió'), h('th', null, 'Estado'), h('th', null, 'Aprobados'), h('th', null, 'Fallidos'), h('th', null, 'Errores'))),
       h('tbody', null, runs.length ? runs.map((r) =>
         h('tr', { class: 'clickable', onclick: () => go(`#/resultados/${r.id}`) },
+          h('td', { onclick: (ev) => ev.stopPropagation() },
+            h('input', { type: 'checkbox', 'aria-label': `Comparar corrida ${r.id}`, onchange: (ev) => { ev.target.checked ? selected.add(r.id) : selected.delete(r.id); refreshSelected(); } })),
           h('td', null, `#${r.id}`),
           h('td', { class: 'muted' }, fmtDate(r.createdAt)),
-          h('td', { class: 'cell-clip', title: r.note || '' }, r.note || h('span', { class: 'muted' }, '—')),
+          h('td', { class: 'cell-clip', title: r.note || '' },
+            r.variant ? h('span', { class: 'badge info', style: { marginRight: '6px' } }, r.variant) : null,
+            r.note || (r.variant ? null : h('span', { class: 'muted' }, '—'))),
           h('td', null, runStatusBadge(r.status)),
           h('td', null, `${r.passed} (${pct(r.passRate)})`),
           h('td', null, r.failed),
-          h('td', null, r.errors))) : emptyRow(7, 'Todavía no se ha ejecutado.')))));
+          h('td', null, r.errors))) : emptyRow(8, 'Todavía no se ha ejecutado.')))));
 }
 
 function trendBars(runs) {
@@ -808,8 +892,10 @@ async function pageEvaluationForm(id) {
   const [agents, datasets] = await Promise.all([api('/agentes'), api('/datasets')]);
   const e = id ? (await api(`/evaluaciones/${id}`)).evaluation : {
     name: '', agentId: agents[0]?.id, datasetId: Number(query().get('dataset')) || datasets[0]?.id,
-    inputColumn: '', checks: [], repetitions: 1,
+    inputColumn: '', checks: [], repetitions: 1, variants: [],
   };
+  // Los parámetros se editan como pares para poder tener filas vacías mientras se escriben.
+  e.variants = (e.variants || []).map((v) => ({ ...v, pairs: Object.entries(v.parameters || {}) }));
   if (!agents.length || !datasets.length) {
     render(pageHead('Nueva evaluación'),
       h('div', { class: 'notice warn' }, 'Para crear una evaluación primero necesitas ',
@@ -879,12 +965,62 @@ async function pageEvaluationForm(id) {
             'Ruta dentro del JSON del agente. Vacío = la respuesta principal.'))));
   };
 
+  const agentOf = (agentId) => agents.find((a) => a.id === Number(agentId));
+  // Parámetros que se le pueden cambiar a un agente: sus {{marcadores}} que no son columnas del caso.
+  const paramsOf = (agent) => agentPlaceholders(agent).filter((n) => n.toLowerCase() !== 'input' && !columnsOf().includes(n));
+
+  const variantCard = (v, i) => {
+    const agent = agentOf(v.agentId || e.agentId);
+    const available = paramsOf(agent);
+    return h('div', { class: 'check-card' },
+      h('div', { class: 'check-head' },
+        h('span', { class: 'badge info' }, variantLetter(i)),
+        h('input', { type: 'text', 'aria-label': 'Nombre de la variante', value: v.name, placeholder: 'Ej. gpt-5-mini + prompt v2', style: { flex: 1, fontWeight: 600 }, oninput: (ev) => (v.name = ev.target.value) }),
+        h('button', { type: 'button', class: 'link danger', onclick: () => { e.variants.splice(i, 1); draw(); } }, 'Quitar')),
+      h('div', { class: 'grid-2' },
+        field('Agente', h('select', { onchange: (ev) => { v.agentId = ev.target.value ? Number(ev.target.value) : null; draw(); } },
+          h('option', { value: '', selected: !v.agentId }, `El de la evaluación (${agentOf(e.agentId)?.name || '—'})`),
+          agents.filter((a) => a.id !== Number(e.agentId)).map((a) => h('option', { value: a.id, selected: a.id === v.agentId }, a.name))),
+          'Otro agente sirve para comparar, por ejemplo, dos proveedores de modelos.'),
+        h('div', { class: 'field' },
+          h('label', null, 'Parámetros'),
+          v.pairs.map((pair, j) => h('div', { class: 'kv-row' },
+            h('input', { type: 'text', value: pair[0], placeholder: 'Nombre (ej. modelo)', list: `params-${i}`, oninput: (ev) => (pair[0] = ev.target.value.trim()) }),
+            h('input', { type: 'text', value: pair[1], placeholder: 'Valor (ej. gpt-5-mini)', oninput: (ev) => (pair[1] = ev.target.value) }),
+            h('button', { type: 'button', class: 'link', title: 'Quitar', onclick: () => { v.pairs.splice(j, 1); draw(); } }, 'Quitar'))),
+          h('datalist', { id: `params-${i}` }, available.map((n) => h('option', { value: n }))),
+          h('button', { type: 'button', onclick: () => { v.pairs.push([available.find((n) => !v.pairs.some((p) => p[0] === n)) || '', '']); draw(); } }, '+ Parámetro'),
+          h('div', { class: 'help' }, agent?.kind === 'codigo'
+            ? ['Tu ejecutor recibe estos parámetros en ', h('code', null, 'parameters'), ' con cada caso.']
+            : available.length
+              ? ['Este agente usa: ', available.map((n) => h('code', { style: { marginRight: '4px' } }, `{{${n}}}`)), '.']
+              : ['Este agente no tiene parámetros. Escribe ', h('code', null, '{{modelo}}'), ', ', h('code', null, '{{prompt}}'), ' o el nombre que quieras en su configuración (cuerpo, URL o prompt) para poder cambiarlo por variante. ',
+                 agent ? h('a', { href: `#/agentes/${agent.id}` }, 'Editar el agente') : null]))));
+  };
+
+  const addVariant = () => {
+    const available = paramsOf(agentOf(e.agentId));
+    e.variants.push({ name: e.variants.length ? `Variante ${variantLetter(e.variants.length)}` : 'Actual', agentId: null, pairs: available.map((n) => [n, '']) });
+    draw();
+  };
+
   const save = async (andRun) => {
-    const body = { ...e, agentId: Number(e.agentId), datasetId: Number(e.datasetId), repetitions: Number(e.repetitions) || 1 };
+    const body = {
+      ...e,
+      agentId: Number(e.agentId),
+      datasetId: Number(e.datasetId),
+      repetitions: Number(e.repetitions) || 1,
+      variants: e.variants.map((v) => ({
+        name: v.name,
+        agentId: v.agentId ? Number(v.agentId) : null,
+        parameters: Object.fromEntries(v.pairs.filter((p) => p[0])),
+      })),
+    };
     try {
       const saved = id ? await api(`/evaluaciones/${id}`, { method: 'PUT', body }) : await api('/evaluaciones', { method: 'POST', body });
       toast('Evaluación guardada');
-      if (andRun) runEvaluation(saved.id, { askNote: !!id });
+      if (andRun && saved.variants.length >= 2) compareEvaluation(saved.id);
+      else if (andRun) runEvaluation(saved.id, { askNote: !!id });
       else go(`#/evaluaciones/${saved.id}`);
     } catch (err) {
       toast(err.message, true);
@@ -898,7 +1034,7 @@ async function pageEvaluationForm(id) {
       h('div', { class: 'card' },
         field('Nombre', h('input', { type: 'text', value: e.name, placeholder: 'Ej. Helpdesk N1 · tickets de octubre', oninput: (ev) => (e.name = ev.target.value) })),
         h('div', { class: 'grid-2' },
-          field('Agente', h('select', { onchange: (ev) => { e.agentId = Number(ev.target.value); } },
+          field('Agente', h('select', { onchange: (ev) => { e.agentId = Number(ev.target.value); draw(); } },
             agents.map((a) => h('option', { value: a.id, selected: a.id === Number(e.agentId) }, a.name)))),
           field('Casos de prueba', h('select', {
             onchange: (ev) => {
@@ -915,6 +1051,12 @@ async function pageEvaluationForm(id) {
             h('span', null, 'Llega al agente como ', h('code', null, '{{input}}'), '.')),
           field('Repeticiones por caso', h('input', { type: 'number', min: 1, max: 10, value: e.repetitions, oninput: (ev) => (e.repetitions = ev.target.value) }),
             'Los modelos no responden siempre igual. Con 3 ves si un caso pasa siempre o solo a veces.'))),
+      h('h2', null, 'Variantes a comparar (opcional)'),
+      h('p', { class: 'muted', style: { marginTop: 0 } }, 'Corre los mismos casos con distintas configuraciones y míralas lado a lado: otro modelo, otro prompt, más o menos documentos, con o sin base de conocimiento. Cada parámetro llega al agente como ', h('code', null, '{{nombre}}'), '. Para números o booleanos en el cuerpo JSON usa ', h('code', null, '"{{json:nombre}}"'), '.'),
+      e.variants.map(variantCard),
+      e.variants.length === 1 ? h('div', { class: 'notice info' }, 'Agrega al menos otra variante para poder comparar.') : null,
+      h('div', { class: 'actions', style: { marginBottom: '8px' } },
+        h('button', { type: 'button', onclick: addVariant }, '+ Agregar variante')),
       h('h2', null, 'Qué comparar en cada respuesta'),
       usesJudge && !catalog.estado.juezConfigurado
         ? h('div', { class: 'notice warn' }, 'Hay comparaciones con juez IA, pero el juez no está configurado en el servidor. Esas comparaciones se van a omitir hasta que se configure (ver README, sección "Juez IA").')
@@ -980,6 +1122,9 @@ async function pageRun(id) {
         !active ? h('a', { class: 'button', href: `/api/corridas/${id}/excel` }, 'Descargar Excel') : null,
         h('button', { onclick: () => runEvaluation(run.evaluationId) }, '▶ Ejecutar de nuevo'),
         h('a', { class: 'button', href: `#/evaluaciones/${run.evaluationId}` }, 'Ver evaluación')),
+      run.variant ? h('div', { class: 'notice info' },
+        h('strong', null, 'Variante: '), run.variant, paramChips(run.parameters),
+        run.comparisonId ? [' · ', h('a', { href: `#/comparativas/${run.comparisonId}` }, 'Ver la comparativa con las demás variantes')] : null) : null,
       run.note ? h('div', { class: 'notice info' }, h('strong', null, 'Qué cambió en esta corrida: '), run.note) : null,
       active ? h('div', { class: 'card' },
         h('strong', null, run.status === 'Queued' ? 'En cola…' : `Ejecutando: ${run.completed} de ${run.total} casos`),
@@ -1080,6 +1225,124 @@ function caseDetail(r) {
     r.rawResponse ? h('details', null, h('summary', null, 'Respuesta completa del agente'), h('pre', null, pretty(r.rawResponse))) : null);
 }
 
+// ---------- Comparativas ----------
+
+// Varias corridas de la misma evaluación lado a lado: una comparativa guardada (id) o corridas elegidas (runIds).
+async function pageComparison(id, runIds) {
+  let data;
+  let timer;
+  let filter = 'todos';
+  const expanded = new Set();
+
+  const load = async () => {
+    data = await api(id ? `/comparativas/${id}` : `/comparativas/corridas?ids=${runIds.join(',')}`);
+    draw();
+    if (!data.report.finished) timer = setTimeout(load, 2000);
+  };
+  cleanups.push(() => clearTimeout(timer));
+
+  const draw = () => {
+    const { comparison, runs, report } = data;
+    if (!runs.length) {
+      render(pageHead(`Comparativa #${id}`),
+        h('div', { class: 'notice warn' }, 'Esta comparativa ya no tiene corridas (se borraron). ',
+          h('button', { class: 'danger', onclick: () => confirmAndDelete('¿Eliminar esta comparativa?', `/comparativas/${id}`, '#/evaluaciones') }, 'Eliminarla')));
+      return;
+    }
+    const variants = report.variants;
+    const first = runs[0];
+    const best = report.bestRunId;
+    const nameOf = (v, i) => `${variantLetter(i)}. ${v.name}`;
+    const anyTokens = variants.some((v) => v.averageTokens != null);
+    const anyModelCalls = variants.some((v) => v.averageModelCalls != null);
+    const anyRepeats = variants.some((v) => v.casesPassingAllAttempts != null);
+    const differing = report.cases.filter((c) => c.differs).length;
+    const visible = report.cases.filter((c) => filter === 'todos' || c.differs);
+    const cellText = (c) => (c.outcome ? [outcomeBadge(c.outcome), c.attempts > 1 ? h('span', { class: 'small muted' }, ` ${c.passed}/${c.attempts}`) : null] : h('span', { class: 'muted' }, '—'));
+
+    render(
+      pageHead(`Comparativa · ${first.evaluationName}`,
+        `${comparison ? `#${comparison.id} · ` : ''}${first.datasetName} · ${fmtDate(comparison?.createdAt || first.createdAt)} · ${variants.length} variantes`,
+        comparison && !report.finished ? h('button', { onclick: async () => { await api(`/comparativas/${id}/cancelar`, { method: 'POST' }); toast('Cancelando…'); } }, 'Cancelar') : null,
+        comparison && report.finished ? h('a', { class: 'button', href: `/api/comparativas/${id}/excel` }, 'Descargar Excel') : null,
+        h('a', { class: 'button', href: `#/evaluaciones/${first.evaluationId}` }, 'Ver evaluación'),
+        comparison && report.finished ? h('button', { class: 'danger', onclick: () => confirmAndDelete('¿Eliminar esta comparativa y sus corridas?', `/comparativas/${id}`, `#/evaluaciones/${first.evaluationId}`) }, 'Eliminar') : null),
+      comparison?.note ? h('div', { class: 'notice info' }, h('strong', null, 'Qué se compara: '), comparison.note) : null,
+      report.verdict ? h('div', { class: 'notice ok' }, h('strong', null, 'Conclusión: '), report.verdict) : null,
+      !report.finished ? h('div', { class: 'card' },
+        h('strong', null, 'Ejecutando las variantes una tras otra…'),
+        variants.map((v, i) => h('div', { style: { marginTop: '8px' } },
+          h('div', { class: 'small' }, nameOf(v, i), ' · ', runStatusBadge(v.status), ` ${v.completed} de ${v.total}`),
+          h('div', { class: 'progress' }, h('span', { style: { width: `${v.total ? (v.completed / v.total) * 100 : 0}%` } }))))) : null,
+      h('div', { class: 'table-wrap' }, h('table', null,
+        h('thead', null, h('tr', null,
+          h('th', null, 'Variante'), h('th', null, 'Aprobados'), h('th', null, ''), h('th', null, 'Fallidos'), h('th', null, 'Errores'),
+          h('th', null, 'Tiempo prom.'), anyTokens ? h('th', null, 'Tokens prom.') : null, anyModelCalls ? h('th', null, 'Llamadas al modelo') : null,
+          anyRepeats ? h('th', null, 'Pasan siempre') : null)),
+        h('tbody', null, variants.map((v, i) => {
+          const done = v.completed || 1;
+          return h('tr', { class: 'clickable', onclick: () => go(`#/resultados/${v.runId}`) },
+            h('td', null, h('strong', null, nameOf(v, i)), v.runId === best ? h('span', { class: 'badge ok', style: { marginLeft: '6px' } }, '★ mejor') : null,
+              h('div', { class: 'small muted' }, v.agentName, paramChips(v.parameters))),
+            h('td', null, h('strong', null, pct(v.passRate)), h('div', { class: 'small muted' }, `${v.passed} de ${v.completed}`)),
+            h('td', null, h('div', { class: 'bar' },
+              h('span', { class: 'ok', style: { width: `${(v.passed / done) * 100}%` } }),
+              h('span', { class: 'bad', style: { width: `${(v.failed / done) * 100}%` } }),
+              h('span', { class: 'warn', style: { width: `${(v.errors / done) * 100}%` } }))),
+            h('td', null, v.failed), h('td', null, v.errors),
+            h('td', null, `${(v.averageLatencyMs / 1000).toFixed(1)} s`),
+            anyTokens ? h('td', null, v.averageTokens != null ? Math.round(v.averageTokens).toLocaleString('es') : '—') : null,
+            anyModelCalls ? h('td', null, v.averageModelCalls != null ? v.averageModelCalls.toLocaleString('es', { maximumFractionDigits: 1 }) : '—') : null,
+            anyRepeats ? h('td', null, v.casesPassingAllAttempts != null ? `${v.casesPassingAllAttempts} casos` : '—') : null);
+        })))),
+      report.checkLabels.length ? [
+        h('h2', null, 'Por comparación'),
+        h('div', { class: 'table-wrap' }, h('table', null,
+          h('thead', null, h('tr', null, h('th', null, 'Comparación (% de casos que pasaron)'), variants.map((v, i) => h('th', null, nameOf(v, i))))),
+          h('tbody', null, report.checkLabels.map((label, k) => {
+            const rates = variants.map((v) => v.checkPassRates[k]);
+            const top = Math.max(...rates.filter((r) => r != null));
+            return h('tr', null, h('td', null, h('strong', null, label)),
+              variants.map((v) => {
+                const rate = v.checkPassRates[k];
+                const score = v.checkAverageScores[k];
+                return h('td', null,
+                  rate == null ? h('span', { class: 'muted', title: 'No se calificó: omitida (por ejemplo, sin juez IA) o sin casos que aplicaran' }, '—') : h('span', { style: { fontWeight: rate === top && rates.some((r) => r != null && r < top) ? 700 : 400 } }, pct(rate)),
+                  score != null && Math.abs(score - rate) > 0.005 ? h('div', { class: 'small muted' }, `puntaje ${pct(score)}`) : null);
+              }));
+          })))),
+      ] : null,
+      h('h2', null, 'Casos'),
+      h('div', { class: 'chips', style: { marginBottom: '10px' } },
+        [['todos', `Todos (${report.cases.length})`], ['difieren', `Solo donde cambia el resultado (${differing})`]].map(([key, label]) =>
+          h('button', { class: `chip filter${filter === key ? ' active' : ''}`, onclick: () => { filter = key; draw(); } }, label))),
+      h('div', { class: 'table-wrap' }, h('table', null,
+        h('thead', null, h('tr', null, h('th', null, '#'), h('th', null, 'Entrada'), variants.map((v, i) => h('th', null, nameOf(v, i))))),
+        h('tbody', null, visible.length ? visible.flatMap((c) => {
+          const rows = [h('tr', { class: 'clickable', onclick: () => { expanded.has(c.rowIndex) ? expanded.delete(c.rowIndex) : expanded.add(c.rowIndex); draw(); } },
+            h('td', { class: 'muted' }, c.rowIndex + 1, c.differs ? h('div', { class: 'small', title: 'El resultado cambia entre variantes' }, '≠') : null),
+            h('td', { class: 'cell-clip', title: c.input }, c.input),
+            c.cells.map((cell) => h('td', null, cellText(cell),
+              cell.tokens != null ? h('div', { class: 'small muted' }, `${Math.round(cell.tokens).toLocaleString('es')} tokens`) : null)))];
+          if (expanded.has(c.rowIndex)) {
+            rows.push(h('tr', { class: 'case-detail' }, h('td', { colspan: 2 + variants.length },
+              h('h3', null, 'Entrada'), h('div', { class: 'text-block' }, c.input),
+              h('div', { style: { display: 'grid', gridTemplateColumns: `repeat(${variants.length}, minmax(220px, 1fr))`, gap: '12px', marginTop: '14px', overflowX: 'auto' } },
+                c.cells.map((cell, i) => h('div', null,
+                  h('h3', null, nameOf(variants[i], i), ' ', cellText(cell)),
+                  cell.output ? h('div', { class: 'text-block' }, cell.output) : h('div', { class: 'text-block muted' }, cell.error || '(sin respuesta)'),
+                  h('div', { class: 'small muted', style: { marginTop: '4px' } },
+                    cell.latencyMs != null ? `${(cell.latencyMs / 1000).toFixed(1)} s` : null,
+                    cell.tokens != null ? ` · ${Math.round(cell.tokens).toLocaleString('es')} tokens` : null,
+                    ' · ', h('a', { href: `#/resultados/${cell.runId}` }, 'ver comparaciones del caso'))))))));
+          }
+          return rows;
+        }) : emptyRow(2 + variants.length, report.finished ? 'No hay casos con este filtro.' : 'Esperando resultados…')))));
+  };
+
+  await load();
+}
+
 // ---------- Navegación ----------
 
 const routes = [
@@ -1096,6 +1359,8 @@ const routes = [
   [/^\/evaluaciones\/(\d+)\/editar$/, (m) => pageEvaluationForm(Number(m[1])), 'evaluaciones'],
   [/^\/resultados$/, pageRuns, 'resultados'],
   [/^\/resultados\/(\d+)$/, (m) => pageRun(Number(m[1])), 'resultados'],
+  [/^\/comparativas\/(\d+)$/, (m) => pageComparison(Number(m[1])), 'evaluaciones'],
+  [/^\/comparar$/, () => pageComparison(null, (query().get('corridas') || '').split(',').map(Number).filter(Boolean)), 'evaluaciones'],
 ];
 
 async function route() {

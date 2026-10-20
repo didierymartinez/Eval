@@ -2,7 +2,7 @@
 
 Comparación entre la plataforma de este repositorio y [promptfoo](https://github.com/promptfoo/promptfoo) (MIT, ~26 mil estrellas). Según su README, promptfoo ahora es parte de OpenAI y sigue siendo open source. Fecha: octubre de 2026.
 
-Resumen: la plataforma ya cubre bien la **evaluación funcional**: casos, comparaciones, juez IA, RAG, MCP, historial y ejecutores en redes privadas. La brecha grande está en **seguridad (red teaming)**. Después vienen las **conversaciones de varios turnos**, la **comparación de variantes** en una misma corrida y la **automatización en CI**.
+Resumen: la plataforma ya cubre bien la **evaluación funcional**: casos, comparaciones, juez IA, RAG, MCP, historial, comparación de variantes (modelo, prompt, RAG) y ejecutores en redes privadas. La brecha grande está en **seguridad (red teaming)**. Después vienen las **conversaciones de varios turnos** y la **automatización en CI**.
 
 ---
 
@@ -38,7 +38,7 @@ Estos tres son de otra categoría; no los recomiendo para esta plataforma.
 
 | promptfoo | En la plataforma | Brecha |
 |---|---|---|
-| **Matriz prompts × modelos**: varias versiones del prompt y varios modelos en la misma corrida, lado a lado | Una evaluación = un agente. Para comparar hay que correr dos veces | **Media-alta**: es la forma natural de decidir "¿prompt v2 o v3?", "¿este modelo o el otro?" |
+| **Matriz prompts × modelos**: varias versiones del prompt y varios modelos en la misma corrida, lado a lado | Sí, con **variantes**: el mismo agente con otros parámetros (`{{modelo}}`, `{{prompt}}`, `{{json:top_k}}`…) u otro agente, lado a lado, con la mejor marcada. Las variantes se escriben una por una: no se genera el producto cartesiano automáticamente | Baja |
 | **Conversaciones de varios turnos**: sesiones, secuencias de mensajes, **usuario simulado** (un modelo hace de cliente con una persona) | Cada caso es una sola pregunta | **Alta** para agentes de soporte: muchos fallos aparecen en el segundo o tercer mensaje |
 | **Caché** de respuestas: no se vuelve a llamar al modelo si nada cambió | No hay caché: cada corrida vuelve a llamar al agente y al juez | Media: costo y tiempo |
 | **Costo en dinero** por caso y por corrida, y la comparación `cost` | Solo tokens | Baja-media |
@@ -92,7 +92,7 @@ La plataforma tiene 15 comparaciones. promptfoo tiene más de 50. Las que más v
    - **Dentro de la plataforma**, un "set de seguridad básico" que genere casos de ataque para tu agente y los califique con el juez "¿resistió?": inyección de prompt directa e indirecta (en documentos y resultados de herramientas), extracción del prompt de sistema, datos de otro cliente (BOLA), uso de herramientas no permitidas, fuera de tema y PII. Es lo que más riesgo cubre para agentes de soporte y cartera.
    - **Para auditorías profundas**, usar promptfoo red team contra los mismos endpoints. Es MIT y tiene 157 plugins, estrategias y reportes por OWASP, NIST y EU AI Act que no vale la pena reimplementar. Se puede importar su resultado a la plataforma.
 2. **Conversaciones de varios turnos y usuario simulado.**
-3. **Comparar variantes en una corrida** (prompts × modelos) y repetir solo los fallidos.
+3. ~~Comparar variantes en una corrida~~ (hecho). Falta repetir solo los fallidos.
 4. **Comparaciones nuevas:** JSON Schema, validez de llamadas a herramientas, negativa a responder y calificación por webhook propio.
 5. **CI:** una CLI pequeña o una acción que ejecute una evaluación y falle si baja de un umbral.
 6. **Caché y costo en dinero.**

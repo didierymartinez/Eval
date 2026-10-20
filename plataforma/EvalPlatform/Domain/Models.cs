@@ -123,6 +123,44 @@ public sealed class Evaluation
 
     // Veces que se corre cada caso (los LLM no responden siempre igual).
     public int Repetitions { get; set; } = 1;
+
+    // Configuraciones a comparar con los mismos casos (modelo, prompt, base de conocimiento…).
+    // Vacío = solo el agente de la evaluación, tal cual.
+    public List<Variant> Variants { get; set; } = [];
+    public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
+}
+
+// Una configuración a comparar: el agente de la evaluación con otros parámetros, u otro agente.
+// Los parámetros llegan a la configuración del agente como {{nombre}} (URL, encabezados, cuerpo,
+// prompt de sistema y modelo de los agentes MCP) y a los ejecutores en "parameters".
+public sealed class Variant
+{
+    public string Name { get; set; } = "";
+
+    // null = el agente de la evaluación.
+    public int? AgentId { get; set; }
+    public Dictionary<string, string> Parameters { get; set; } = [];
+
+    // Columnas del caso + parámetros de la variante; si se llaman igual, gana el parámetro.
+    public static Dictionary<string, string> Merge(IReadOnlyDictionary<string, string> row, IReadOnlyDictionary<string, string>? parameters)
+    {
+        var merged = new Dictionary<string, string>(row, StringComparer.OrdinalIgnoreCase);
+        foreach (var (key, value) in parameters ?? new Dictionary<string, string>())
+        {
+            merged[key] = value;
+        }
+        return merged;
+    }
+}
+
+// Varias corridas lanzadas juntas, una por variante, para verlas lado a lado.
+public sealed class Comparison
+{
+    public int Id { get; set; }
+    public int EvaluationId { get; set; }
+    public string EvaluationName { get; set; } = "";
+    public string DatasetName { get; set; } = "";
+    public string? Note { get; set; }
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
 }
 
@@ -153,6 +191,16 @@ public sealed class Run
     public string EvaluationName { get; set; } = "";
     public string AgentName { get; set; } = "";
     public string DatasetName { get; set; } = "";
+
+    // Agente que se llamó (null en corridas anteriores a las variantes = el de la evaluación).
+    public int? AgentId { get; set; }
+
+    // Variante de la evaluación que se corrió y sus parámetros (null = sin variantes).
+    public string? Variant { get; set; }
+    public Dictionary<string, string> Parameters { get; set; } = [];
+
+    // Comparativa a la que pertenece, si se lanzó junto con otras variantes.
+    public int? ComparisonId { get; set; }
 
     // Grupo de ejecutores que atiende esta corrida (null = la plataforma).
     public string? Executor { get; set; }

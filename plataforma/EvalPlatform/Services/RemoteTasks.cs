@@ -23,7 +23,9 @@ public sealed record ExecutorTask(
     string Input,
     Dictionary<string, string> Row,
     Agent Agent,
-    string? TraceId);
+    string? TraceId,
+    string? Variant = null,
+    Dictionary<string, string>? Parameters = null);
 
 // Lo que devuelve un ejecutor. Arguments puede venir como objeto JSON o como texto con JSON.
 public sealed record ExecutorToolCall(string Name, JsonElement? Arguments, string? Result);
@@ -98,7 +100,8 @@ public sealed partial class RemoteTasks(IDbContextFactory<EvalDbContext> dbFacto
             var runIds = candidates.Select(t => t.RunId).Distinct().ToList();
             var runs = await db.Runs.Where(r => runIds.Contains(r.Id) && r.Status == RunStatus.Running).ToDictionaryAsync(r => r.Id, ct);
             var evaluations = await db.Evaluations.Where(e => runs.Values.Select(r => r.EvaluationId).Contains(e.Id)).ToDictionaryAsync(e => e.Id, ct);
-            var agents = await db.Agents.Where(a => evaluations.Values.Select(e => e.AgentId).Contains(a.Id)).ToDictionaryAsync(a => a.Id, ct);
+            var agentIds = runs.Values.Select(r => r.AgentId ?? evaluations.GetValueOrDefault(r.EvaluationId)?.AgentId).OfType<int>().Distinct().ToList();
+            var agents = await db.Agents.Where(a => agentIds.Contains(a.Id)).ToDictionaryAsync(a => a.Id, ct);
 
             var claimed = new List<ExecutorTask>();
             foreach (RunTask task in candidates)
@@ -109,7 +112,7 @@ public sealed partial class RemoteTasks(IDbContextFactory<EvalDbContext> dbFacto
                 }
                 if (!runs.TryGetValue(task.RunId, out Run? run)
                     || !evaluations.TryGetValue(run.EvaluationId, out Evaluation? evaluation)
-                    || !agents.TryGetValue(evaluation.AgentId, out Agent? agent))
+                    || !agents.TryGetValue(run.AgentId ?? evaluation.AgentId, out Agent? agent))
                 {
                     continue;
                 }
@@ -125,7 +128,7 @@ public sealed partial class RemoteTasks(IDbContextFactory<EvalDbContext> dbFacto
                 task.LeaseUntil = now.AddSeconds(Math.Clamp(agent.TimeoutSeconds, 1, 1800) + 60);
                 // Cada entrega lleva su propia traza: el ejecutor manda traceparent y el agente sus spans.
                 task.TraceId = agent.TracesEnabled ? traces.Register() : null;
-                claimed.Add(new ExecutorTask(task.Id, task.RunId, task.RowIndex + 1, task.Attempt, task.Input, task.Row, agent, task.TraceId));
+                claimed.Add(new ExecutorTask(task.Id, task.RunId, task.RowIndex + 1, task.Attempt, task.Input, task.Row, agent, task.TraceId, run.Variant, run.Parameters));
             }
             await db.SaveChangesAsync(ct);
             return claimed;
@@ -154,7 +157,7 @@ public sealed partial class RemoteTasks(IDbContextFactory<EvalDbContext> dbFacto
             }
             run = await db.Runs.SingleAsync(r => r.Id == task.RunId, ct);
             Evaluation evaluation = await db.Evaluations.SingleAsync(e => e.Id == run.EvaluationId, ct);
-            agent = await db.Agents.SingleAsync(a => a.Id == evaluation.AgentId, ct);
+            agent = await db.Agents.SingleAsync(a => a.Id == (run.AgentId ?? evaluation.AgentId), ct);
         }
 
         List<ToolCallRecord> calls = (input.ToolCalls ?? []).Select(c => new ToolCallRecord

@@ -23,10 +23,15 @@ public static class SchemaUpgrade
         ("RunResults", "TraceId", "TEXT NULL"),
         ("RunResults", "Trace", "TEXT NOT NULL DEFAULT '{}'"),
         ("RunTasks", "TraceId", "TEXT NULL"),
+        ("Evaluations", "Variants", "TEXT NOT NULL DEFAULT '[]'"),
+        ("Runs", "AgentId", "INTEGER NULL"),
+        ("Runs", "Variant", "TEXT NULL"),
+        ("Runs", "Parameters", "TEXT NOT NULL DEFAULT '{}'"),
+        ("Runs", "ComparisonId", "INTEGER NULL"),
     ];
 
     // Tablas nuevas; mismo esquema que crea EnsureCreated (ver la prueba de migración).
-    private const string CreateRunTasks = """
+    private const string CreateTables = """
         CREATE TABLE IF NOT EXISTS "RunTasks" (
             "Id" INTEGER NOT NULL CONSTRAINT "PK_RunTasks" PRIMARY KEY AUTOINCREMENT,
             "RunId" INTEGER NOT NULL,
@@ -42,6 +47,14 @@ public static class SchemaUpgrade
         );
         CREATE INDEX IF NOT EXISTS "IX_RunTasks_Group_State" ON "RunTasks" ("Group", "State");
         CREATE INDEX IF NOT EXISTS "IX_RunTasks_RunId" ON "RunTasks" ("RunId");
+        CREATE TABLE IF NOT EXISTS "Comparisons" (
+            "Id" INTEGER NOT NULL CONSTRAINT "PK_Comparisons" PRIMARY KEY AUTOINCREMENT,
+            "EvaluationId" INTEGER NOT NULL,
+            "EvaluationName" TEXT NOT NULL,
+            "DatasetName" TEXT NOT NULL,
+            "Note" TEXT NULL,
+            "CreatedAt" INTEGER NOT NULL
+        );
         """;
 
     public static async Task ApplyAsync(EvalDbContext db)
@@ -53,7 +66,7 @@ public static class SchemaUpgrade
         {
             await using (SqliteCommand create = connection.CreateCommand())
             {
-                create.CommandText = CreateRunTasks;
+                create.CommandText = CreateTables;
                 await create.ExecuteNonQueryAsync();
             }
             foreach (var (table, column, type) in s_columns)
@@ -66,6 +79,11 @@ public static class SchemaUpgrade
                     alter.CommandText = $"ALTER TABLE \"{table}\" ADD COLUMN \"{column}\" {type}";
                     await alter.ExecuteNonQueryAsync();
                 }
+            }
+            await using (SqliteCommand index = connection.CreateCommand())
+            {
+                index.CommandText = """CREATE INDEX IF NOT EXISTS "IX_Runs_ComparisonId" ON "Runs" ("ComparisonId");""";
+                await index.ExecuteNonQueryAsync();
             }
         }
         finally

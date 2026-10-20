@@ -14,6 +14,7 @@ public sealed class EvalDbContext(DbContextOptions<EvalDbContext> options) : DbC
     public DbSet<Run> Runs => Set<Run>();
     public DbSet<RunResult> RunResults => Set<RunResult>();
     public DbSet<RunTask> RunTasks => Set<RunTask>();
+    public DbSet<Comparison> Comparisons => Set<Comparison>();
 
     protected override void OnModelCreating(ModelBuilder model)
     {
@@ -28,10 +29,16 @@ public sealed class EvalDbContext(DbContextOptions<EvalDbContext> options) : DbC
             e.Json(d => d.Columns);
             e.Json(d => d.Rows);
         });
-        model.Entity<Evaluation>(e => e.Json(v => v.Checks));
+        model.Entity<Evaluation>(e =>
+        {
+            e.Json(v => v.Checks);
+            e.Json(v => v.Variants);
+        });
         model.Entity<Run>(e =>
         {
+            e.HasIndex(r => r.ComparisonId);
             e.Json(r => r.Checks);
+            e.Json(r => r.Parameters);
             e.Property(r => r.Status).HasConversion<string>();
         });
         model.Entity<RunResult>(e =>

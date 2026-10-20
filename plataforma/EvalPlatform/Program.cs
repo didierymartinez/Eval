@@ -76,7 +76,9 @@ if (demo)
     app.MapMcp("/demo/mcp");
 
     app.MapPost("/demo/helpdesk", (JsonElement body) =>
-        DemoHelpdeskAgent.Respond(body.TryGetProperty("mensaje", out JsonElement m) ? m.GetString() ?? "" : ""));
+        DemoHelpdeskAgent.Respond(
+            body.TryGetProperty("mensaje", out JsonElement m) ? m.GetString() ?? "" : "",
+            body.TryGetProperty("base", out JsonElement b) ? b.GetString() : null));
 
     if (app.Configuration.GetValue("Demo:CrearEjemplo", true))
     {

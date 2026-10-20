@@ -15,16 +15,16 @@ namespace EvalPlatform.Services;
 public sealed record McpToolInfo(string Name, string? Title, string? Description, JsonElement InputSchema);
 
 // Modelo que usa las herramientas del MCP en los agentes "MCP con modelo".
+// Recibe la configuración ya con los {{parámetros}} del caso y la variante reemplazados.
 public interface IAgentModelFactory
 {
-    IChatClient? Create(Agent agent);
+    IChatClient? Create(McpSettings mcp);
 }
 
 public sealed class OpenAiCompatibleModelFactory(IJudgeProvider judge) : IAgentModelFactory
 {
-    public IChatClient? Create(Agent agent)
+    public IChatClient? Create(McpSettings mcp)
     {
-        McpSettings mcp = agent.Mcp;
         if (string.IsNullOrWhiteSpace(mcp.ModelName))
         {
             // Sin modelo propio se usa el del juez IA.
@@ -145,23 +145,35 @@ public sealed class McpInvoker(IHttpClientFactory httpFactory, IAgentModelFactor
     // Con modelo: el modelo recibe la entrada y las herramientas del MCP, y decide cuáles llamar.
     private async Task<AgentInvocation> RunWithModelAsync(Agent agent, McpClient client, string input, Dictionary<string, string> vars, CancellationToken ct)
     {
-        IChatClient? model = models.Create(agent);
+        IChatClient? model = models.Create(new McpSettings
+        {
+            ModelEndpoint = agent.Mcp.ModelEndpoint is null ? null : Templates.RenderText(agent.Mcp.ModelEndpoint, vars),
+            ModelName = agent.Mcp.ModelName is null ? null : Templates.RenderText(agent.Mcp.ModelName, vars),
+            ModelApiKey = agent.Mcp.ModelApiKey,
+        });
         if (model is null)
         {
             return new AgentInvocation { Error = "No hay modelo: configura uno en el agente o el juez IA del servidor." };
         }
 
         IList<McpClientTool> tools = await client.ListToolsAsync(cancellationToken: ct);
-        HashSet<string>? allowed = string.IsNullOrWhiteSpace(agent.Mcp.AllowedTools)
+        string allowedTools = Templates.RenderText(agent.Mcp.AllowedTools ?? "", vars);
+        HashSet<string>? allowed = string.IsNullOrWhiteSpace(allowedTools)
             ? null
-            : agent.Mcp.AllowedTools.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            : allowedTools.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToHashSet(StringComparer.OrdinalIgnoreCase);
         List<AITool> offered = tools.Where(t => allowed is null || allowed.Contains(t.Name)).Select(t => (AITool)new TextResultTool(t)).ToList();
 
         var messages = new List<ChatMessage>();
-        if (!string.IsNullOrWhiteSpace(agent.Mcp.SystemPrompt))
+        string? system = string.IsNullOrWhiteSpace(agent.Mcp.SystemPrompt) ? null : Templates.RenderText(agent.Mcp.SystemPrompt, vars);
+        if (system is not null)
         {
-            messages.Add(new ChatMessage(ChatRole.System, Templates.RenderText(agent.Mcp.SystemPrompt, vars)));
+            messages.Add(new ChatMessage(ChatRole.System, system));
         }
+        // Un parámetro "temperatura" (de la variante o del caso) reemplaza la del agente.
+        float? temperature = vars.TryGetValue("temperatura", out string? t)
+            && float.TryParse(t, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float parsed)
+            ? parsed
+            : agent.Mcp.Temperature;
         messages.Add(new ChatMessage(ChatRole.User, input));
 
         using IChatClient chat = model.AsBuilder().UseFunctionInvocation(configure: f => f.MaximumIterationsPerRequest = 10).Build();
@@ -169,7 +181,7 @@ public sealed class McpInvoker(IHttpClientFactory httpFactory, IAgentModelFactor
         ChatResponse response;
         try
         {
-            response = await chat.GetResponseAsync(messages, new ChatOptions { Tools = offered, Temperature = agent.Mcp.Temperature }, ct);
+            response = await chat.GetResponseAsync(messages, new ChatOptions { Tools = offered, Temperature = temperature }, ct);
         }
         catch (Exception ex) when (ex is ClientResultException or HttpRequestException or InvalidOperationException)
         {
@@ -200,7 +212,7 @@ public sealed class McpInvoker(IHttpClientFactory httpFactory, IAgentModelFactor
 
         return new AgentInvocation
         {
-            RequestBody = JsonSerializer.Serialize(new { sistema = agent.Mcp.SystemPrompt, entrada = input, herramientas = offered.Select(t => t.Name) }, s_json),
+            RequestBody = JsonSerializer.Serialize(new { sistema = system, modelo = agent.Mcp.ModelName is null ? null : Templates.RenderText(agent.Mcp.ModelName, vars), temperatura = temperature, entrada = input, herramientas = offered.Select(t => t.Name) }, s_json),
             HttpStatus = 200,
             RawResponse = json.ToJsonString(s_json),
             Json = json,

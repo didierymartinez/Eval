@@ -68,20 +68,22 @@ public class AgentInvokerTests
 
 public class SchemaUpgradeTests
 {
-    [Fact]
-    public async Task La_tabla_RunTasks_manual_coincide_con_la_de_EF()
+    [Theory]
+    [InlineData("RunTasks")]
+    [InlineData("Comparisons")]
+    public async Task Las_tablas_manuales_coinciden_con_las_de_EF(string table)
     {
-        static async Task<List<string>> Columns(string path, bool viaUpgrade)
+        async Task<List<string>> Columns(string path, bool viaUpgrade)
         {
             var options = new DbContextOptionsBuilder<EvalDbContext>().UseSqlite($"Data Source={path}").Options;
             await using var db = new EvalDbContext(options);
             await db.Database.EnsureCreatedAsync();
             if (viaUpgrade)
             {
-                await db.Database.ExecuteSqlRawAsync("""DROP TABLE "RunTasks";""");
+                await db.Database.ExecuteSqlRawAsync($"""DROP TABLE "{table}";""");
                 await SchemaUpgrade.ApplyAsync(db);
             }
-            return await db.Database.SqlQueryRaw<string>("""SELECT name || ' ' || type || ' ' || "notnull" AS "Value" FROM pragma_table_info('RunTasks') ORDER BY cid""").ToListAsync();
+            return await db.Database.SqlQueryRaw<string>($"""SELECT name || ' ' || type || ' ' || "notnull" AS "Value" FROM pragma_table_info('{table}') ORDER BY cid""").ToListAsync();
         }
         string a = Path.Combine(Path.GetTempPath(), $"eval-a-{Guid.NewGuid():N}.db"), b = Path.Combine(Path.GetTempPath(), $"eval-b-{Guid.NewGuid():N}.db");
         try
@@ -114,6 +116,12 @@ public class SchemaUpgradeTests
                     ALTER TABLE "Agents" DROP COLUMN "TracesEnabled"; ALTER TABLE "Agents" DROP COLUMN "TraceWaitSeconds";
                     ALTER TABLE "RunResults" DROP COLUMN "TraceId"; ALTER TABLE "RunResults" DROP COLUMN "Trace";
                     DROP TABLE "RunTasks";
+                    DROP INDEX "IX_Runs_ComparisonId";
+                    ALTER TABLE "Runs" DROP COLUMN "AgentId"; ALTER TABLE "Runs" DROP COLUMN "Variant";
+                    ALTER TABLE "Runs" DROP COLUMN "Parameters"; ALTER TABLE "Runs" DROP COLUMN "ComparisonId";
+                    ALTER TABLE "Evaluations" DROP COLUMN "Variants";
+                    DROP TABLE "Comparisons";
+                    INSERT INTO "Evaluations" ("Name", "AgentId", "DatasetId", "InputColumn", "Checks", "Repetitions", "CreatedAt") VALUES ('vieja', 1, 1, 'input', '[]', 1, 0);
                     INSERT INTO "Agents" ("Name", "Url", "Method", "Headers", "BodyTemplate", "ResponsePath", "TimeoutSeconds", "CreatedAt") VALUES ('viejo', 'http://x', 'POST', '{{}}', '', '', 10, 0);
                     """);
             }
@@ -134,6 +142,14 @@ public class SchemaUpgradeTests
                 db.RunTasks.Add(new RunTask { RunId = 1, Group = "g", Input = "x", Row = new() { ["a"] = "b" }, LeaseUntil = DateTimeOffset.UtcNow });
                 await db.SaveChangesAsync();
                 Assert.Equal("b", (await db.RunTasks.SingleAsync()).Row["a"]);
+                // Evaluaciones y corridas anteriores a las variantes.
+                Evaluation vieja = await db.Evaluations.SingleAsync();
+                Assert.Empty(vieja.Variants);
+                Run corrida = await db.Runs.SingleAsync();
+                Assert.Null(corrida.Variant);
+                Assert.Empty(corrida.Parameters);
+                db.Comparisons.Add(new Comparison { EvaluationId = vieja.Id, EvaluationName = "vieja" });
+                await db.SaveChangesAsync();
             }
         }
         finally

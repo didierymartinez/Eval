@@ -27,7 +27,7 @@ GRUPO = os.environ.get("EVAL_GRUPO", "")
 NOMBRE = os.environ.get("EVAL_NOMBRE", f"python-{socket.gethostname()}")
 
 
-def ejecutar_agente(entrada, datos, traceparent=None):
+def ejecutar_agente(entrada, datos, traceparent=None, parametros=None):
     """Llama a tu agente con la entrada del caso y devuelve lo que respondió.
 
     entrada:     el texto de la columna de entrada de la evaluación.
@@ -36,6 +36,9 @@ def ejecutar_agente(entrada, datos, traceparent=None):
                  W3C con que el agente debe continuar la traza (mándalo como header
                  "traceparent" o úsalo como contexto padre de OpenTelemetry). Así sus tokens
                  llegan a la plataforma aunque el agente no los devuelva.
+    parametros:  los parámetros de la variante que se está comparando (dict), por ejemplo
+                 {"modelo": "gpt-5-mini", "prompt": "v2", "top_k": "10"}. Vacío si la corrida
+                 no es de una variante. Úsalos para configurar tu agente en este caso.
 
     Devuelve un dict; solo "salida" es obligatoria:
         salida:        texto de la respuesta
@@ -80,7 +83,7 @@ def procesar(caso):
     inicio = time.monotonic()
     resultado = {"taskId": caso["taskId"]}
     try:
-        r = ejecutar_agente(caso["input"], caso["row"], traceparent(caso))
+        r = ejecutar_agente(caso["input"], caso["row"], traceparent(caso), caso.get("parameters") or {})
         resultado.update(
             output=str(r.get("salida", "")),
             toolCalls=[

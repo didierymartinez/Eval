@@ -30,13 +30,17 @@ public sealed record DatasetLinkInput(string Name, string Url);
 
 public sealed record RenameInput(string Name);
 
-public sealed record RunInput(string? Note);
+// Variant: nombre de una variante de la evaluación (vacío = el agente de la evaluación, sin parámetros).
+public sealed record RunInput(string? Note, string? Variant = null);
 
-public sealed record EvaluationInput(string Name, int AgentId, int DatasetId, string InputColumn, List<CheckDefinition> Checks, int? Repetitions);
+// Variants: nombres de las variantes a comparar (vacío = todas).
+public sealed record CompareInput(string? Note, List<string>? Variants);
+
+public sealed record EvaluationInput(string Name, int AgentId, int DatasetId, string InputColumn, List<CheckDefinition> Checks, int? Repetitions, List<Variant>? Variants = null);
 
 public sealed record AgentTemplate(string Id, string Name, string Description, AgentInput Agent);
 
-public static class ApiEndpoints
+public static partial class ApiEndpoints
 {
     public static void MapEvalApi(this WebApplication app)
     {
@@ -50,6 +54,7 @@ public static class ApiEndpoints
         MapDatasets(api.MapGroup("/datasets"));
         MapEvaluations(api.MapGroup("/evaluaciones"));
         MapRuns(api.MapGroup("/corridas"));
+        MapComparisons(api.MapGroup("/comparativas"));
     }
 
     private static IResult Bad(string error) => Results.BadRequest(new { error });
@@ -98,9 +103,10 @@ public static class ApiEndpoints
             {
                 return Results.NotFound();
             }
-            if (await db.Evaluations.AnyAsync(e => e.AgentId == id))
+            if (await db.Evaluations.AnyAsync(e => e.AgentId == id)
+                || (await db.Evaluations.ToListAsync()).Any(e => e.Variants.Any(v => v.AgentId == id)))
             {
-                return Conflict("Hay evaluaciones que usan este agente. Bórralas o cámbiales el agente primero.");
+                return Conflict("Hay evaluaciones que usan este agente (directamente o en una variante). Bórralas o cámbiales el agente primero.");
             }
             db.Agents.Remove(agent);
             await db.SaveChangesAsync();
@@ -432,6 +438,7 @@ public static class ApiEndpoints
                 e.DatasetId,
                 datasetName = datasets.GetValueOrDefault(e.DatasetId),
                 checkCount = e.Checks.Count,
+                variantCount = e.Variants.Count,
                 lastRun = lastRuns.TryGetValue(e.Id, out Run? r) ? RunListItem(r) : null,
             });
         });
@@ -443,7 +450,17 @@ public static class ApiEndpoints
                 return Results.NotFound();
             }
             var runs = await db.Runs.Where(r => r.EvaluationId == id).OrderByDescending(r => r.Id).Take(50).ToListAsync();
-            return Results.Ok(new { evaluation = e, runs = runs.Select(RunListItem) });
+            var comparisons = await db.Comparisons.Where(c => c.EvaluationId == id).OrderByDescending(c => c.Id).Take(20).ToListAsync();
+            var comparisonIds = comparisons.Select(c => c.Id).ToList();
+            var comparisonRuns = (await db.Runs.Where(r => r.ComparisonId != null && comparisonIds.Contains(r.ComparisonId.Value)).ToListAsync())
+                .GroupBy(r => r.ComparisonId!.Value)
+                .ToDictionary(gr => gr.Key, gr => gr.OrderBy(r => r.Id).Select(RunListItem).ToList());
+            return Results.Ok(new
+            {
+                evaluation = e,
+                runs = runs.Select(RunListItem),
+                comparisons = comparisons.Select(c => new { c.Id, c.Note, c.CreatedAt, runs = comparisonRuns.GetValueOrDefault(c.Id) ?? [] }),
+            });
         });
 
         g.MapPost("/", async (EvaluationInput input, EvalDbContext db) =>
@@ -487,6 +504,7 @@ public static class ApiEndpoints
             await db.RunResults.Where(r => runIds.Contains(r.RunId)).ExecuteDeleteAsync();
             await db.RunTasks.Where(t => runIds.Contains(t.RunId)).ExecuteDeleteAsync();
             await db.Runs.Where(r => r.EvaluationId == id).ExecuteDeleteAsync();
+            await db.Comparisons.Where(c => c.EvaluationId == id).ExecuteDeleteAsync();
             db.Evaluations.Remove(evaluation);
             await db.SaveChangesAsync();
             return Results.NoContent();
@@ -498,31 +516,109 @@ public static class ApiEndpoints
             {
                 return Results.NotFound();
             }
-            Agent? agent = await db.Agents.FindAsync(evaluation.AgentId);
+            Variant? variant = null;
+            if (!string.IsNullOrWhiteSpace(input?.Variant))
+            {
+                variant = evaluation.Variants.FirstOrDefault(v => v.Name.Equals(input.Variant.Trim(), StringComparison.OrdinalIgnoreCase));
+                if (variant is null)
+                {
+                    return Bad($"La evaluación no tiene una variante llamada '{input.Variant.Trim()}'.");
+                }
+            }
+            var (runs, error) = await PrepareRunsAsync(evaluation, [variant], input?.Note, null, db);
+            if (error is not null)
+            {
+                return Bad(error);
+            }
+            await db.SaveChangesAsync();
+            await queue.EnqueueAsync(runs[0].Id);
+            return Results.Accepted($"/api/corridas/{runs[0].Id}", new { runId = runs[0].Id });
+        });
+
+        // Corre las mismas pruebas con cada variante (una corrida por variante) para verlas lado a lado.
+        g.MapPost("/{id:int}/comparar", async (int id, CompareInput? input, EvalDbContext db, RunQueue queue) =>
+        {
+            if (await db.Evaluations.FindAsync(id) is not Evaluation evaluation)
+            {
+                return Results.NotFound();
+            }
+            List<Variant> chosen = evaluation.Variants;
+            if (input?.Variants is { Count: > 0 } names)
+            {
+                string? missing = names.FirstOrDefault(n => !evaluation.Variants.Any(v => v.Name.Equals(n.Trim(), StringComparison.OrdinalIgnoreCase)));
+                if (missing is not null)
+                {
+                    return Bad($"La evaluación no tiene una variante llamada '{missing}'.");
+                }
+                chosen = evaluation.Variants.Where(v => names.Any(n => v.Name.Equals(n.Trim(), StringComparison.OrdinalIgnoreCase))).ToList();
+            }
+            if (chosen.Count < 2)
+            {
+                return Bad("Para comparar se necesitan al menos dos variantes. Agrégalas al editar la evaluación (sección «Variantes a comparar»).");
+            }
             Dataset? dataset = await db.Datasets.FindAsync(evaluation.DatasetId);
-            if (agent is null || dataset is null)
-            {
-                return Bad("El agente o el dataset de esta evaluación ya no existen.");
-            }
-            if (dataset.Rows.Count == 0)
-            {
-                return Bad("El dataset no tiene casos.");
-            }
-            var run = new Run
+            var comparison = new Comparison
             {
                 EvaluationId = evaluation.Id,
                 EvaluationName = evaluation.Name,
+                DatasetName = dataset?.Name ?? "",
+                Note = string.IsNullOrWhiteSpace(input?.Note) ? null : input.Note.Trim(),
+            };
+            db.Comparisons.Add(comparison);
+            await db.SaveChangesAsync();
+            var (runs, error) = await PrepareRunsAsync(evaluation, chosen.Cast<Variant?>().ToList(), input?.Note, comparison.Id, db);
+            if (error is not null)
+            {
+                db.Comparisons.Remove(comparison);
+                await db.SaveChangesAsync();
+                return Bad(error);
+            }
+            await db.SaveChangesAsync();
+            foreach (Run run in runs)
+            {
+                await queue.EnqueueAsync(run.Id);
+            }
+            return Results.Accepted($"/api/comparativas/{comparison.Id}", new { comparisonId = comparison.Id, runIds = runs.Select(r => r.Id) });
+        });
+    }
+
+    // Una corrida por variante (null = el agente de la evaluación sin parámetros). Las deja agregadas sin guardar.
+    private static async Task<(List<Run> Runs, string? Error)> PrepareRunsAsync(Evaluation evaluation, List<Variant?> variants, string? note, int? comparisonId, EvalDbContext db)
+    {
+        Dataset? dataset = await db.Datasets.FindAsync(evaluation.DatasetId);
+        if (dataset is null)
+        {
+            return ([], "El dataset de esta evaluación ya no existe.");
+        }
+        if (dataset.Rows.Count == 0)
+        {
+            return ([], "El dataset no tiene casos.");
+        }
+        var runs = new List<Run>();
+        foreach (Variant? variant in variants)
+        {
+            int agentId = variant?.AgentId ?? evaluation.AgentId;
+            if (await db.Agents.FindAsync(agentId) is not Agent agent)
+            {
+                return ([], variant is null ? "El agente de esta evaluación ya no existe." : $"El agente de la variante '{variant.Name}' ya no existe.");
+            }
+            runs.Add(new Run
+            {
+                EvaluationId = evaluation.Id,
+                EvaluationName = evaluation.Name,
+                AgentId = agent.Id,
                 AgentName = agent.Name,
                 DatasetName = dataset.Name,
-                Note = string.IsNullOrWhiteSpace(input?.Note) ? null : input.Note.Trim(),
+                Variant = variant?.Name,
+                Parameters = new Dictionary<string, string>(variant?.Parameters ?? []),
+                ComparisonId = comparisonId,
+                Note = string.IsNullOrWhiteSpace(note) ? null : note.Trim(),
                 Checks = evaluation.Checks,
                 Total = dataset.Rows.Count * Math.Max(1, evaluation.Repetitions),
-            };
-            db.Runs.Add(run);
-            await db.SaveChangesAsync();
-            await queue.EnqueueAsync(run.Id);
-            return Results.Accepted($"/api/corridas/{run.Id}", new { runId = run.Id });
-        });
+            });
+        }
+        db.Runs.AddRange(runs);
+        return (runs, null);
     }
 
     private static async Task<string?> ValidateAsync(EvaluationInput input, EvalDbContext db)
@@ -567,8 +663,78 @@ public static class ApiEndpoints
         {
             return "Las repeticiones deben estar entre 1 y 10.";
         }
+        return await ValidateVariantsAsync(input, db);
+    }
+
+    private static async Task<string?> ValidateVariantsAsync(EvaluationInput input, EvalDbContext db)
+    {
+        List<Variant> variants = input.Variants ?? [];
+        if (variants.Count > 10)
+        {
+            return "Se pueden comparar hasta 10 variantes.";
+        }
+        var seen = new Dictionary<string, Variant>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (variant, i) in variants.Select((v, i) => (v, i + 1)))
+        {
+            string name = variant.Name?.Trim() ?? "";
+            if (name.Length is 0 or > 60)
+            {
+                return $"Variante {i}: ponle un nombre corto (hasta 60 letras), por ejemplo «gpt-5-mini + prompt v2».";
+            }
+            if (seen.ContainsKey(name))
+            {
+                return $"Hay dos variantes llamadas «{name}».";
+            }
+            int agentId = variant.AgentId ?? input.AgentId;
+            if (await db.Agents.FindAsync(agentId) is not Agent agent)
+            {
+                return $"Variante «{name}»: el agente elegido no existe.";
+            }
+            var parameters = (variant.Parameters ?? []).Where(p => !string.IsNullOrWhiteSpace(p.Key)).ToDictionary(p => p.Key.Trim(), p => p.Value ?? "");
+            foreach (string key in parameters.Keys)
+            {
+                if (!ParameterName().IsMatch(key) || key.Equals("input", StringComparison.OrdinalIgnoreCase))
+                {
+                    return $"Variante «{name}»: «{key}» no sirve como nombre de parámetro. Usa letras, números o _ (por ejemplo modelo, prompt, top_k) y no uses «input».";
+                }
+            }
+            // Un parámetro que el agente no usa no cambia nada: la comparación saldría igual sin que se note.
+            if (agent.Kind != AgentKinds.Code)
+            {
+                HashSet<string> used = UsedPlaceholders(agent);
+                string? unused = parameters.Keys.FirstOrDefault(k => !used.Contains(k) && !(agent.Kind == AgentKinds.McpModel && k.Equals("temperatura", StringComparison.OrdinalIgnoreCase)));
+                if (unused is not null)
+                {
+                    return $"Variante «{name}»: el agente «{agent.Name}» no usa el parámetro «{unused}». Escribe {{{{{unused}}}}} en su configuración (por ejemplo en el cuerpo o en el prompt) o quita el parámetro.";
+                }
+            }
+            Variant? twin = seen.Values.FirstOrDefault(o => (o.AgentId ?? input.AgentId) == agentId
+                && o.Parameters.Count == parameters.Count
+                && o.Parameters.All(p => parameters.TryGetValue(p.Key, out string? v) && v == p.Value));
+            if (twin is not null)
+            {
+                return $"Las variantes «{twin.Name}» y «{name}» son iguales: mismo agente y mismos parámetros.";
+            }
+            seen[name] = new Variant { Name = name, AgentId = variant.AgentId, Parameters = parameters };
+        }
         return null;
     }
+
+    // Marcadores {{...}} que aparecen en la configuración del agente.
+    private static HashSet<string> UsedPlaceholders(Agent agent) =>
+        new[] { agent.Url }
+            .Concat(agent.Kind switch
+            {
+                AgentKinds.McpDirect => [agent.Mcp.ToolTemplate, agent.Mcp.ArgumentsTemplate],
+                AgentKinds.McpModel => [agent.Mcp.SystemPrompt, agent.Mcp.ModelName, agent.Mcp.ModelEndpoint, agent.Mcp.AllowedTools],
+                _ => new[] { agent.BodyTemplate },
+            })
+            .Concat(agent.Headers.Values)
+            .SelectMany(Templates.Placeholders)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+    [System.Text.RegularExpressions.GeneratedRegex("^[A-Za-z_][A-Za-z0-9_]{0,49}$")]
+    private static partial System.Text.RegularExpressions.Regex ParameterName();
 
     private static Evaluation Apply(Evaluation evaluation, EvaluationInput input)
     {
@@ -588,6 +754,12 @@ public static class ApiEndpoints
             Blocking = c.Blocking,
         }).ToList();
         evaluation.Repetitions = input.Repetitions ?? 1;
+        evaluation.Variants = (input.Variants ?? []).Select(v => new Variant
+        {
+            Name = v.Name.Trim(),
+            AgentId = v.AgentId == input.AgentId ? null : v.AgentId,
+            Parameters = (v.Parameters ?? []).Where(p => !string.IsNullOrWhiteSpace(p.Key)).ToDictionary(p => p.Key.Trim(), p => p.Value ?? ""),
+        }).ToList();
         return evaluation;
     }
 
@@ -600,6 +772,10 @@ public static class ApiEndpoints
         r.EvaluationName,
         r.AgentName,
         r.DatasetName,
+        r.AgentId,
+        r.Variant,
+        r.Parameters,
+        r.ComparisonId,
         r.Note,
         r.Executor,
         r.Status,
@@ -639,23 +815,7 @@ public static class ApiEndpoints
             {
                 return Results.NotFound();
             }
-            if (run.Executor is not null && run.Status == RunStatus.Running)
-            {
-                await tasks.CancelRunAsync(db, id, CancellationToken.None);
-                run.Status = RunStatus.Cancelled;
-                run.FinishedAt = DateTimeOffset.UtcNow;
-                await db.SaveChangesAsync();
-            }
-            else if (run.Status == RunStatus.Queued)
-            {
-                run.Status = RunStatus.Cancelled;
-                run.FinishedAt = DateTimeOffset.UtcNow;
-                await db.SaveChangesAsync();
-            }
-            else if (run.Status == RunStatus.Running)
-            {
-                queue.Cancel(id);
-            }
+            await CancelRunAsync(run, db, queue, tasks);
             return Results.Accepted();
         });
 
@@ -692,11 +852,32 @@ public static class ApiEndpoints
         });
     }
 
+    private static async Task CancelRunAsync(Run run, EvalDbContext db, RunQueue queue, RemoteTasks tasks)
+    {
+        if (run.Executor is not null && run.Status == RunStatus.Running)
+        {
+            await tasks.CancelRunAsync(db, run.Id, CancellationToken.None);
+            run.Status = RunStatus.Cancelled;
+            run.FinishedAt = DateTimeOffset.UtcNow;
+            await db.SaveChangesAsync();
+        }
+        else if (run.Status == RunStatus.Queued)
+        {
+            run.Status = RunStatus.Cancelled;
+            run.FinishedAt = DateTimeOffset.UtcNow;
+            await db.SaveChangesAsync();
+        }
+        else if (run.Status == RunStatus.Running)
+        {
+            queue.Cancel(run.Id);
+        }
+    }
+
     private static async Task<(RunSummary Summary, List<RunResult> Results)> SummaryAsync(Run run, EvalDbContext db)
     {
         var results = await db.RunResults.Where(r => r.RunId == run.Id).ToListAsync();
         Run? previous = await db.Runs
-            .Where(r => r.EvaluationId == run.EvaluationId && r.Id < run.Id && r.Status == RunStatus.Completed)
+            .Where(r => r.EvaluationId == run.EvaluationId && r.Id < run.Id && r.Status == RunStatus.Completed && r.Variant == run.Variant)
             .OrderByDescending(r => r.Id)
             .FirstOrDefaultAsync();
         List<RunResult>? previousResults = previous is null ? null : await db.RunResults.Where(r => r.RunId == previous.Id).ToListAsync();
