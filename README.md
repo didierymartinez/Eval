@@ -23,6 +23,7 @@ Guía completa: [`plataforma/README.md`](plataforma/README.md).
 
 - [`docs/investigacion-evals-llm.md`](docs/investigacion-evals-llm.md): conceptos de evaluación de LLM, herramientas del mercado, cómo conectar un agente y un plan por fases.
 - [`docs/evaluar-rag-helpdesk.md`](docs/evaluar-rag-helpdesk.md): cómo saber si la base de conocimiento de un agente de helpdesk con RAG alcanza para el primer nivel.
+- [`docs/brechas-vs-promptfoo.md`](docs/brechas-vs-promptfoo.md): qué hace promptfoo que la plataforma no hace (seguridad, ejecución, comparaciones) y qué conviene construir después.
 
 ## Alternativas por línea de comandos
 
