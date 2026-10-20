@@ -22,7 +22,8 @@ public sealed record RunSummary(
     IReadOnlyList<CheckSummary> Checks,
     int? PreviousRunId,
     double? PreviousPassRate,
-    IReadOnlyList<CaseChange> Changes);
+    IReadOnlyList<CaseChange> Changes,
+    long? JudgeTokens = null);
 
 public static class RunReport
 {
@@ -53,7 +54,8 @@ public static class RunReport
             ? results.GroupBy(r => r.RowIndex).Count(g => g.All(r => r.Outcome == CaseOutcome.Passed))
             : null;
 
-        int skippedJudge = results.Sum(r => r.Checks.Count(c => c.Status == CheckStatus.Skipped && (CheckTypes.Find(c.Type)?.UsesJudge ?? false)));
+        // Solo las omitidas por falta de juez; las omitidas porque el caso no tiene lo esperado no cuentan.
+        int skippedJudge = results.Sum(r => r.Checks.Count(c => c.Status == CheckStatus.Skipped && c.Reason == JudgeResolver.NotConfiguredReason));
 
         var changes = new List<CaseChange>();
         double? previousPassRate = null;
@@ -82,7 +84,8 @@ public static class RunReport
             checks,
             previous?.Id,
             previousPassRate,
-            changes);
+            changes,
+            results.Any(r => r.JudgeTokens is not null) ? results.Sum(r => (long)(r.JudgeTokens ?? 0)) : null);
     }
 
     private static double? AverageTokens(IReadOnlyList<RunResult> results)
@@ -116,6 +119,11 @@ public static class RunReport
         {
             resumen.Cell(8, 3).Value = "Tokens promedio";
             resumen.Cell(8, 4).Value = Math.Round(tokens);
+        }
+        if (summary.JudgeTokens is long judgeTokens)
+        {
+            resumen.Cell(7, 3).Value = $"Tokens del juez ({run.JudgeName})";
+            resumen.Cell(7, 4).Value = judgeTokens;
         }
 
         int row = 10;

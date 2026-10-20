@@ -10,7 +10,8 @@ using Microsoft.Extensions.AI.Evaluation.Quality;
 
 namespace EvalPlatform.Services;
 
-public sealed record CaseData(Agent Agent, string Input, IReadOnlyDictionary<string, string> Row, AgentInvocation Invocation);
+// Judge: el juez de la corrida (cuenta tokens y respeta el límite). Sin él se usa el juez del servidor.
+public sealed record CaseData(Agent Agent, string Input, IReadOnlyDictionary<string, string> Row, AgentInvocation Invocation, JudgeSession? Judge = null);
 
 // Aplica una comparación a la respuesta de un caso.
 public sealed class CheckRunner(IJudgeProvider judgeProvider)
@@ -211,10 +212,22 @@ public sealed class CheckRunner(IJudgeProvider judgeProvider)
 
     private async Task<CheckResult> RunJudgeAsync(CheckDefinition check, CheckTypeInfo info, CheckResult result, CaseData data, string actual, string expected, CancellationToken ct)
     {
-        ChatConfiguration? judge = judgeProvider.Get();
+        ChatConfiguration? judge;
+        if (data.Judge is not null)
+        {
+            if (await data.Judge.BlockedAsync(ct) is { } blocked)
+            {
+                return Set(result, blocked.Status, blocked.Reason);
+            }
+            judge = data.Judge.Chat;
+        }
+        else
+        {
+            judge = judgeProvider.Get();
+        }
         if (judge is null)
         {
-            return Set(result, CheckStatus.Skipped, "No se ejecutó: el juez IA no está configurado (ver README, sección Juez IA).");
+            return Set(result, CheckStatus.Skipped, JudgeResolver.NotConfiguredReason);
         }
 
         bool needsContext = info.Family == CheckFamily.Rag;

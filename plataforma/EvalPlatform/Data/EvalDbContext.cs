@@ -15,6 +15,8 @@ public sealed class EvalDbContext(DbContextOptions<EvalDbContext> options) : DbC
     public DbSet<RunResult> RunResults => Set<RunResult>();
     public DbSet<RunTask> RunTasks => Set<RunTask>();
     public DbSet<Comparison> Comparisons => Set<Comparison>();
+    public DbSet<Judge> Judges => Set<Judge>();
+    public DbSet<JudgeUsage> JudgeUsages => Set<JudgeUsage>();
 
     protected override void OnModelCreating(ModelBuilder model)
     {
@@ -52,6 +54,8 @@ public sealed class EvalDbContext(DbContextOptions<EvalDbContext> options) : DbC
             e.Json(r => r.Checks);
             e.Property(r => r.Outcome).HasConversion<string>();
         });
+
+        model.Entity<JudgeUsage>(e => e.HasIndex(u => new { u.JudgeKey, u.Month }).IsUnique());
 
         model.Entity<RunTask>(e =>
         {

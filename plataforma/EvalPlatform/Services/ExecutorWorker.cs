@@ -18,8 +18,9 @@ public static class ExecutorWorker
         if (options is null)
         {
             Console.Error.WriteLine("""
-                Uso: EvalPlatform ejecutor --plataforma <url> --grupo <grupo> [--nombre <nombre>] [--concurrencia <n>]
+                Uso: EvalPlatform ejecutor --plataforma <url> --grupo <grupo> [--nombre <nombre>] [--concurrencia <n>] [--trazas <puerto>]
                 El token se lee de la variable de entorno EVAL_EJECUTOR_TOKEN (o --token).
+                --trazas 4318 recibe las trazas OpenTelemetry de los agentes de esta red y las reenvía a la plataforma.
                 """);
             return 2;
         }
@@ -50,8 +51,55 @@ public static class ExecutorWorker
         AppDomain.CurrentDomain.ProcessExit += (_, _) => stop.Cancel();
 
         log.LogInformation("Ejecutor {Nombre} del grupo {Grupo} conectado a {Plataforma} ({Concurrencia} en paralelo).", options.Name, options.Group, options.Platform, options.Concurrency);
+        WebApplication? relay = options.TracePort is int port ? await StartTraceRelayAsync(port, http, log, stop.Token) : null;
         await Task.WhenAll(Enumerable.Range(0, options.Concurrency).Select(_ => LoopAsync(options, http, dispatcher, log, stop.Token)));
+        if (relay is not null)
+        {
+            await relay.StopAsync();
+        }
         return 0;
+    }
+
+    // Recibe OTLP/HTTP (POST /v1/traces) de los agentes de esta red y lo reenvía a la plataforma
+    // por la misma salida que usa el ejecutor. Los agentes usan OTEL_EXPORTER_OTLP_ENDPOINT=http://<ejecutor>:<puerto>.
+    private static async Task<WebApplication> StartTraceRelayAsync(int port, IHttpClientFactory http, ILogger log, CancellationToken ct)
+    {
+        WebApplicationBuilder web = WebApplication.CreateSlimBuilder();
+        web.WebHost.UseUrls($"http://0.0.0.0:{port}");
+        web.Logging.SetMinimumLevel(LogLevel.Warning);
+        WebApplication app = web.Build();
+        app.MapPost("/v1/traces", async (HttpRequest request, CancellationToken requestAborted) =>
+        {
+            using var content = new StreamContent(request.Body);
+            content.Headers.ContentType = System.Net.Http.Headers.MediaTypeHeaderValue.Parse(request.ContentType ?? "application/x-protobuf");
+            foreach (string? encoding in request.Headers.ContentEncoding)
+            {
+                if (!string.IsNullOrEmpty(encoding))
+                {
+                    content.Headers.ContentEncoding.Add(encoding);
+                }
+            }
+            try
+            {
+                using HttpResponseMessage response = await http.CreateClient("plataforma").PostAsync("v1/traces", content, requestAborted);
+                byte[] body = await response.Content.ReadAsByteArrayAsync(requestAborted);
+                if (!response.IsSuccessStatusCode)
+                {
+                    log.LogWarning("La plataforma rechazó trazas: HTTP {Estado}.", (int)response.StatusCode);
+                    return Results.StatusCode((int)response.StatusCode);
+                }
+                return Results.Bytes(body, response.Content.Headers.ContentType?.ToString());
+            }
+            catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
+            {
+                // 503: el exportador de OpenTelemetry reintenta solo.
+                log.LogWarning("No se pudieron reenviar trazas a la plataforma: {Mensaje}", ex.Message);
+                return Results.StatusCode(503);
+            }
+        });
+        await app.StartAsync(ct);
+        log.LogInformation("Recibiendo trazas OpenTelemetry en http://0.0.0.0:{Puerto}/v1/traces y reenviándolas a la plataforma.", port);
+        return app;
     }
 
     private static async Task LoopAsync(Options options, IHttpClientFactory http, AgentDispatcher dispatcher, ILogger log, CancellationToken ct)
@@ -102,7 +150,7 @@ public static class ExecutorWorker
         }
     }
 
-    private sealed record Options(string Platform, string Group, string Name, string Token, int Concurrency);
+    private sealed record Options(string Platform, string Group, string Name, string Token, int Concurrency, int? TracePort);
 
     private static Options? Parse(string[] args)
     {
@@ -123,6 +171,7 @@ public static class ExecutorWorker
         }
         string name = map.GetValueOrDefault("nombre") ?? Environment.GetEnvironmentVariable("EVAL_NOMBRE") ?? Environment.MachineName;
         int concurrency = int.TryParse(map.GetValueOrDefault("concurrencia") ?? Environment.GetEnvironmentVariable("EVAL_CONCURRENCIA"), out int c) ? Math.Clamp(c, 1, 20) : 2;
-        return new Options(platform, group.Trim().ToLowerInvariant(), name, token, concurrency);
+        int? tracePort = int.TryParse(map.GetValueOrDefault("trazas") ?? Environment.GetEnvironmentVariable("EVAL_PUERTO_TRAZAS"), out int p) && p is > 0 and < 65536 ? p : null;
+        return new Options(platform, group.Trim().ToLowerInvariant(), name, token, concurrency, tracePort);
     }
 }

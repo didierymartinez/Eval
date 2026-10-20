@@ -9,3 +9,4 @@ promptfoo/helpdesk/resultados*.json
 promptfoo/helpdesk/diagnostico.csv
 plataforma/EvalPlatform/datos/
 __pycache__/
+plataforma/.env

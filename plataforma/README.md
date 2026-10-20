@@ -79,6 +79,27 @@ export Juez__Model=llama3.1
 
 Usa como juez un modelo igual o más capaz que el del agente. Antes de confiar en los puntajes, revisa a mano 20–30 casos y compara con lo que dijo el juez.
 
+### Jueces por equipo: que cada uno pague sus tokens
+
+En un servidor compartido, el juez del servidor lo paga quien lo administra. Para que cada equipo use su cuenta:
+
+1. En **Jueces IA** (menú), cada equipo registra su juez: endpoint, modelo, clave y, si quiere, un **límite de tokens por mes**. Puede ser cualquier API compatible con OpenAI, incluso un modelo local sin costo por token.
+2. En cada evaluación elige ese juez en **Juez IA**. *Generar con IA* también deja elegirlo.
+
+Cómo se manejan las claves y el consumo:
+- **La clave se guarda cifrada** (ASP.NET Data Protection). No se vuelve a mostrar: solo sus últimos 4 caracteres. También puede ser `{{env:VARIABLE}}` para leerla de una variable del servidor.
+- **La clave guardada no viaja a otro endpoint.** Si cambias el endpoint de un juez, hay que volver a escribir la clave. *Probar* también usa la clave guardada solo con el endpoint guardado. Así nadie puede apuntar la clave de otro equipo a su propio servidor.
+- **Llaves de cifrado:** están en la carpeta `claves/` junto a la base, en el mismo volumen. **Respáldalas junto con `eval.db`.** Sin ellas las claves guardadas no se pueden leer y hay que volver a escribirlas.
+- **Conteo de tokens:** cada corrida guarda los tokens que gastó el juez, por caso y en total, y la página *Jueces IA* muestra el uso del mes de cada juez. Si el modelo no informa el uso, se estima (unos 4 caracteres por token).
+- **Al llegar al límite**, las comparaciones con juez quedan como **Error**, con el motivo, hasta el mes siguiente o hasta que se suba el límite. Las comparaciones sin juez siguen funcionando. Las llamadas que ya estaban en curso pueden pasar un poco el límite.
+
+Para que el servidor no gaste nada:
+- `Juez__PermitirEnEvaluaciones=false` obliga a cada evaluación a usar el juez de un equipo. Tampoco se usa el juez del servidor como modelo de los agentes *MCP con modelo* que no tienen modelo propio.
+- `Juez__LimiteTokensMes` pone un tope mensual al juez del servidor.
+- `Limites__CasosPorEjecucion` limita cuántos casos (casos × repeticiones × variantes) puede tener una ejecución.
+
+No todas las comparaciones gastan tokens: *Contiene*, *Es igual a*, *Herramientas*, *Argumentos*, *Tokens* y *Latencia* son gratis. Una comparación con juez es una llamada al modelo por caso (de unos cientos a ~1.500 tokens).
+
 ## Conectar un agente
 
 En **Agentes → Nuevo agente** hay plantillas para los casos comunes:
@@ -219,7 +240,7 @@ Detalles:
 - **No se cuenta dos veces:** si una cadena reporta tokens que también reportan sus llamadas internas, solo se cuentan las internas.
 - **Solo se guardan los spans de las trazas que inició la plataforma.** Si el agente exporta todo su tráfico, lo demás se descarta.
 - **La plataforma espera las trazas** hasta el tiempo configurado (15 s por defecto), porque los exportadores envían por lotes. Termina antes si ya llegaron los tokens.
-- **Con ejecutores remotos:** cada caso trae su `traceId` y el ejecutor manda el `traceparent`. El agente exporta a la plataforma, que debe ser alcanzable desde su red; es una conexión saliente.
+- **Con ejecutores remotos:** cada caso trae su `traceId` y el ejecutor manda el `traceparent`. El agente exporta a la plataforma (una conexión saliente) o, si no la alcanza, a su ejecutor (ver *Trazas desde una red sin salida*).
 
 Si el servicio no se puede instrumentar (un producto de terceros, por ejemplo):
 - **Pasarela de modelos:** apunta el agente a un proxy compatible con OpenAI que registre el consumo, como LiteLLM o Azure API Management, con una clave usada solo por el ambiente de evaluación. Con concurrencia 1 se puede atribuir el consumo a cada caso por tiempo.
@@ -319,7 +340,38 @@ Hay un ejecutor de ejemplo en **Python sin dependencias** en [`ejecutores/python
 | El agente expone HTTP o MCP y la plataforma lo alcanza | Agente normal: lo llama la plataforma |
 | El agente expone HTTP o MCP pero solo dentro de su red | Ejecutor genérico en esa red |
 | El agente no expone HTTP (gRPC, colas, librería, consola) o necesitas preparar datos antes de cada caso | Tu propio código |
-| Una sola red para todo | También puedes desplegar la plataforma dentro de esa red (ver *Publicar*) |
+| Una sola red para todo | También puedes desplegar la plataforma dentro de esa red (ver *Producción*) |
+| La red no tiene ningún camino hacia la plataforma | Plataforma dentro de esa red y llevar los resultados con *Exportar / Importar* |
+
+### Qué necesita la red
+
+No hace falta internet: hace falta un camino desde la red del agente hacia la URL de la plataforma. Las conexiones siempre salen del ejecutor; no se abre nada entrante en la red del agente.
+- **Plataforma en un servidor interno:** los ejecutores llegan por la red corporativa.
+- **Salida restringida:** basta una regla que permita HTTPS saliente hacia el dominio de la plataforma, o el proxy corporativo. Los ejecutores .NET y Python respetan `HTTPS_PROXY`.
+- **Red aislada:** la plataforma va adentro. La imagen se lleva con `docker save evaluaciones | gzip > evaluaciones.tar.gz` y `docker load < evaluaciones.tar.gz`, el juez es un modelo de esa red, y los resultados salen con *Exportar*.
+
+### Trazas desde una red sin salida
+
+Si el agente no alcanza la plataforma pero sí su ejecutor, el ejecutor recibe sus trazas y las reenvía por la conexión que ya tiene:
+
+```bash
+EvalPlatform ejecutor --plataforma https://... --grupo red-finanzas --trazas 4318   # .NET
+EVAL_PUERTO_TRAZAS=4318 python ejecutor.py                                       # Python
+```
+
+En el agente: `OTEL_EXPORTER_OTLP_ENDPOINT=http://<máquina-del-ejecutor>:4318`. El ejecutor reenvía a `/v1/traces` con su token de ejecutor, que la plataforma acepta aunque `Trazas__Token` esté definido. Si la plataforma no responde, el ejecutor devuelve 503 y el exportador de OpenTelemetry reintenta.
+
+Si el agente ni siquiera alcanza el ejecutor, que devuelva los tokens en su respuesta (*Tokens consumidos*), o pon un OpenTelemetry Collector en su red que reenvíe al ejecutor.
+
+## Llevar resultados entre plataformas
+
+Para redes aisladas o para juntar resultados en una plataforma central:
+1. En la plataforma de origen, **Exportar** en una corrida o en una comparativa. Descarga un `.json` con la evaluación, los casos, las respuestas, las comparaciones, los tokens y las trazas resumidas.
+2. En la plataforma de destino, ve a **Resultados → Importar resultados de otra plataforma**. Puedes agregar las corridas a una evaluación que ya existe o crear una nueva con sus casos.
+
+Lo importado queda marcado con su origen (`Plataforma__Nombre` de la plataforma que exportó). Se ve y se compara igual que lo propio; para volver a ejecutarlo, elige un agente al editar la evaluación.
+
+El archivo trae las respuestas del agente y los datos de los casos: trátalo con el mismo cuidado que la base.
 
 ## Casos de prueba
 
@@ -419,7 +471,11 @@ La demo incluye dos variantes de la base de conocimiento, «Base actual» y «Ba
 | Clave | Por defecto | Para qué |
 |---|---|---|
 | `ConnectionStrings:Eval` | `Data Source=datos/eval.db` | Ruta de la base SQLite |
-| `Juez:Endpoint`, `Juez:ApiKey`, `Juez:Model` | vacío | Modelo juez (ver arriba) |
+| `Juez:Endpoint`, `Juez:ApiKey`, `Juez:Model` | vacío | Juez del servidor (ver arriba) |
+| `Juez:LimiteTokensMes` | vacío | Tokens por mes del juez del servidor. Vacío = sin límite |
+| `Juez:PermitirEnEvaluaciones` | `true` | `false` = cada evaluación usa el juez de un equipo (*Jueces IA*) |
+| `Limites:CasosPorEjecucion` | `0` | Máximo de casos × repeticiones × variantes por ejecución. 0 = sin límite |
+| `Plataforma:Nombre` | nombre de la máquina | Cómo se identifica esta plataforma en los archivos exportados |
 | `Corridas:MaxConcurrency` | `3` | Casos en paralelo por corrida (cuando llama la plataforma). Bájalo si el agente se satura |
 | `Ejecutores:Token` | vacío | Token que deben enviar los ejecutores remotos. Vacío = API de ejecutores apagada |
 | `Trazas:Habilitado` | `true` | Receptor OTLP de trazas en `/v1/traces` |
@@ -435,25 +491,78 @@ En variables de entorno, el `:` se escribe `__` (por ejemplo, `Corridas__MaxConc
 - La plataforma hace llamadas HTTP a las URLs que se configuren en los agentes. Quien pueda crear agentes puede hacer que el servidor llame a cualquier dirección a la que tenga acceso.
 - Las claves van en variables de entorno (`{{env:NOMBRE}}`), no en los encabezados guardados. Con ejecutores remotos se leen en el ejecutor.
 - La API de ejecutores usa un token compartido (`Ejecutores__Token`). Los ejecutores reciben la configuración del agente (URL, encabezados con sus `{{env:…}}`, cuerpo), no los valores de los secretos.
+- Las claves de los jueces de equipo se guardan cifradas. Las llaves de cifrado (`claves/`) quedan junto a la base, sin cifrar en disco: protege ese volumen como protegerías la base.
+- Sin inicio de sesión, cualquiera que entre a la plataforma puede usar los jueces de cualquier equipo. Los límites mensuales acotan el daño; el control de acceso lo da el proxy de delante.
 - Para producción: `Demo__Habilitado=false`.
 
-## Publicar en un servidor
+## Producción
+
+### Requisitos
+
+| | |
+|---|---|
+| **Máquina** | Linux, Windows o macOS (x64 o ARM64). 1 vCPU y 1 GB de RAM alcanzan para un equipo: el trabajo pesado lo hacen el agente y el juez |
+| **Runtime** | Ninguno con Docker. Sin Docker: ASP.NET Core 10, o publicar *self-contained* |
+| **Disco** | Persistente y **local** (no carpetas compartidas SMB/NFS: SQLite se corrompe en ellas). Cada caso guarda la respuesta del agente (hasta 200 KB); las corridas viejas se borran desde la interfaz |
+| **Una sola instancia** | La cola de corridas, el reparto a ejecutores y la espera de trazas están en memoria. No pongas dos réplicas sobre la misma base |
+| **Entrada** | Usuarios (interfaz y API); ejecutores a `/api/ejecutores/*` (long polling de 20 s: el proxy necesita un timeout de lectura mayor); agentes a `/v1/traces` |
+| **Salida** | URLs de los agentes y servidores MCP, API del juez, Google Sheets. Respeta `HTTPS_PROXY` |
+| **Acceso** | No tiene inicio de sesión: ponle delante un proxy con HTTPS y SSO, o úsala en una red interna. `/api/ejecutores/*` y `/v1/traces` se protegen con sus propios tokens |
+
+### Con Docker Compose
+
+[`docker-compose.yml`](docker-compose.yml) y [`.env.example`](.env.example) tienen todo:
 
 ```bash
-dotnet publish EvalPlatform -c Release -o publicado
-cd publicado && ASPNETCORE_URLS=http://0.0.0.0:5080 ./EvalPlatform
+cd plataforma
+cp .env.example .env          # completa los valores; no lo subas al repositorio
+docker compose up -d --build  # o, con la imagen en un registro: EVAL_IMAGEN=miregistro/evaluaciones:1.4.0
 ```
 
-La carpeta `datos/` con la base SQLite queda junto al ejecutable. Si la publicas en un servicio en la nube, apunta `ConnectionStrings__Eval` a un disco persistente.
+Los datos quedan en el volumen `eval-datos` (`/datos`): la base `eval.db` y las llaves de cifrado `claves/`. Al arrancar, la aplicación agrega sola las tablas y columnas nuevas.
 
-Con Docker (desde la raíz del repositorio):
+**Actualizar** es cambiar la imagen:
 
 ```bash
-docker build -f plataforma/Dockerfile -t evaluaciones .
-docker run -d -p 5080:8080 -v eval-datos:/datos -e Ejecutores__Token=... -e Demo__Habilitado=false evaluaciones
+docker compose pull && docker compose up -d
 ```
 
-La misma imagen sirve como ejecutor remoto (`evaluaciones ejecutor --plataforma ... --grupo ...`).
+- **Actualiza sin corridas en curso.** Las que ejecuta la plataforma quedan como falladas al reiniciar; las de ejecutores remotos siguen solas, porque los ejecutores reintentan.
+- **Nunca** uses `docker compose down -v` ni borres el volumen: ahí está todo.
+- **Usa etiquetas de versión**, no solo `latest`, para poder volver atrás. Los cambios de esquema solo agregan columnas con valor por defecto, así que una versión anterior normalmente sigue funcionando con la base nueva; para estar seguro, respalda antes.
+
+**Respaldar** (la imagen no trae `sqlite3`; con el contenedor detenido la copia es consistente):
+
+```bash
+docker compose stop
+docker run --rm -v plataforma_eval-datos:/datos -v "$PWD":/respaldo alpine tar czf /respaldo/eval-$(date +%F).tgz -C /datos .
+docker compose start
+```
+
+El nombre del volumen lleva el prefijo del proyecto (`docker volume ls`). Si montas una carpeta del servidor en vez de un volumen, dale permisos al usuario del contenedor: `sudo chown -R 1654 /srv/evaluaciones`.
+
+El mismo `docker-compose.yml` trae un servicio `ejecutor` (perfil `ejecutor`) para levantar un ejecutor con relay de trazas en otra red: `docker compose --profile ejecutor up -d ejecutor`.
+
+### Sin Docker
+
+```bash
+dotnet publish EvalPlatform -c Release -r linux-x64 --self-contained -o /opt/evaluaciones
+```
+
+Como servicio de systemd:
+
+```ini
+[Service]
+WorkingDirectory=/opt/evaluaciones
+ExecStart=/opt/evaluaciones/EvalPlatform
+User=evaluaciones
+Restart=always
+Environment=ASPNETCORE_URLS=http://127.0.0.1:5080
+Environment=ConnectionStrings__Eval=Data Source=/var/lib/evaluaciones/eval.db
+EnvironmentFile=/etc/evaluaciones.env
+```
+
+`WorkingDirectory` debe ser la carpeta publicada: ahí está la interfaz (`wwwroot`). La ruta relativa de la base se toma desde la carpeta de la aplicación, pero en producción conviene una ruta absoluta en un disco de datos. En Windows funciona detrás de IIS con el *ASP.NET Core Hosting Bundle*.
 
 ## Desarrollo
 

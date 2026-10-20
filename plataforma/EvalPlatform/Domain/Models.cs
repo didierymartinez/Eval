@@ -124,6 +124,9 @@ public sealed class Evaluation
     // Veces que se corre cada caso (los LLM no responden siempre igual).
     public int Repetitions { get; set; } = 1;
 
+    // Juez IA de las comparaciones con juez (null = el juez del servidor).
+    public int? JudgeId { get; set; }
+
     // Configuraciones a comparar con los mismos casos (modelo, prompt, base de conocimiento…).
     // Vacío = solo el agente de la evaluación, tal cual.
     public List<Variant> Variants { get; set; } = [];
@@ -151,6 +154,37 @@ public sealed class Variant
         }
         return merged;
     }
+}
+
+// Modelo juez de un equipo: su endpoint, su modelo, su clave y su límite de consumo.
+// Así cada equipo paga los tokens de sus evaluaciones y no el dueño del servidor.
+public sealed class Judge
+{
+    public int Id { get; set; }
+    public string Name { get; set; } = "";
+
+    // API compatible con OpenAI. Vacío = api.openai.com.
+    public string? Endpoint { get; set; }
+    public string Model { get; set; } = "";
+
+    // Clave cifrada (Data Protection, llaves en la carpeta de datos). Nunca sale por la API.
+    // Puede ser {{env:VARIABLE}} para leerla del servidor.
+    public string? ProtectedApiKey { get; set; }
+
+    // Tokens por mes calendario (null = sin límite).
+    public long? MonthlyTokenLimit { get; set; }
+    public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
+    public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
+}
+
+// Tokens que consumió un juez en un mes ("servidor" o el id del juez).
+public sealed class JudgeUsage
+{
+    public long Id { get; set; }
+    public string JudgeKey { get; set; } = "";
+    public string Month { get; set; } = "";
+    public long Tokens { get; set; }
+    public int Calls { get; set; }
 }
 
 // Varias corridas lanzadas juntas, una por variante, para verlas lado a lado.
@@ -202,6 +236,13 @@ public sealed class Run
     // Comparativa a la que pertenece, si se lanzó junto con otras variantes.
     public int? ComparisonId { get; set; }
 
+    // Juez IA que calificó (null = el del servidor) y su nombre en ese momento.
+    public int? JudgeId { get; set; }
+    public string? JudgeName { get; set; }
+
+    // De dónde vino, si se importó de otra plataforma (por ejemplo, de una red aislada).
+    public string? ImportedFrom { get; set; }
+
     // Grupo de ejecutores que atiende esta corrida (null = la plataforma).
     public string? Executor { get; set; }
 
@@ -241,6 +282,9 @@ public sealed class RunResult
     public int? HttpStatus { get; set; }
     public long LatencyMs { get; set; }
     public int? Tokens { get; set; }
+
+    // Tokens que gastó el juez IA en calificar este caso.
+    public int? JudgeTokens { get; set; }
     public string? TraceId { get; set; }
     public TraceSummary Trace { get; set; } = new();
     public CaseOutcome Outcome { get; set; }

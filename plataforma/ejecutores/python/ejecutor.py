@@ -8,15 +8,22 @@ Uso:
     export EVAL_PLATAFORMA=https://evaluaciones.miempresa
     export EVAL_EJECUTOR_TOKEN=...          # el mismo valor de Ejecutores__Token en la plataforma
     export EVAL_GRUPO=red-finanzas          # el grupo configurado en el agente de la plataforma
+    export EVAL_PUERTO_TRAZAS=4318          # opcional: recibe las trazas OpenTelemetry del agente
     python ejecutor.py
+
+Con EVAL_PUERTO_TRAZAS, el agente manda sus trazas a este ejecutor
+(OTEL_EXPORTER_OTLP_ENDPOINT=http://<este-equipo>:4318) y el ejecutor las reenvía a la
+plataforma por la misma salida. Sirve cuando el agente no tiene camino hacia la plataforma.
 
 Para usarlo con tu agente, cambia solo la función ejecutar_agente().
 """
 
+import http.server
 import json
 import os
 import socket
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -25,6 +32,7 @@ PLATAFORMA = os.environ.get("EVAL_PLATAFORMA", "http://localhost:5080").rstrip("
 TOKEN = os.environ.get("EVAL_EJECUTOR_TOKEN", "")
 GRUPO = os.environ.get("EVAL_GRUPO", "")
 NOMBRE = os.environ.get("EVAL_NOMBRE", f"python-{socket.gethostname()}")
+PUERTO_TRAZAS = int(os.environ.get("EVAL_PUERTO_TRAZAS", "0") or 0)
 
 
 def ejecutar_agente(entrada, datos, traceparent=None, parametros=None):
@@ -100,9 +108,46 @@ def procesar(caso):
     return llamar("resultado", resultado)
 
 
+class ReenvioDeTrazas(http.server.BaseHTTPRequestHandler):
+    """Recibe POST /v1/traces (OTLP/HTTP) y lo reenvía a la plataforma con el token del ejecutor."""
+
+    def do_POST(self):
+        if self.path.split("?")[0] != "/v1/traces":
+            self.send_error(404)
+            return
+        cuerpo = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+        encabezados = {"Content-Type": self.headers.get("Content-Type", "application/x-protobuf"), "X-Ejecutor-Token": TOKEN}
+        if self.headers.get("Content-Encoding"):
+            encabezados["Content-Encoding"] = self.headers["Content-Encoding"]
+        pedido = urllib.request.Request(f"{PLATAFORMA}/v1/traces", data=cuerpo, headers=encabezados, method="POST")
+        try:
+            with urllib.request.urlopen(pedido, timeout=30) as respuesta:
+                estado, datos, tipo = respuesta.status, respuesta.read(), respuesta.headers.get("Content-Type", "application/x-protobuf")
+        except urllib.error.HTTPError as error:
+            estado, datos, tipo = error.code, b"", "text/plain"
+        except (urllib.error.URLError, TimeoutError, ConnectionError):
+            estado, datos, tipo = 503, b"", "text/plain"  # el exportador de OpenTelemetry reintenta solo
+        self.send_response(estado)
+        self.send_header("Content-Type", tipo)
+        self.send_header("Content-Length", str(len(datos)))
+        self.end_headers()
+        self.wfile.write(datos)
+
+    def log_message(self, formato, *args):
+        pass
+
+
+def iniciar_reenvio_de_trazas():
+    servidor = http.server.ThreadingHTTPServer(("0.0.0.0", PUERTO_TRAZAS), ReenvioDeTrazas)
+    threading.Thread(target=servidor.serve_forever, daemon=True).start()
+    print(f"Recibiendo trazas OpenTelemetry en el puerto {PUERTO_TRAZAS} y reenviándolas a la plataforma.", flush=True)
+
+
 def main():
     if not TOKEN or not GRUPO:
         sys.exit("Configura EVAL_EJECUTOR_TOKEN y EVAL_GRUPO (ver el comienzo de este archivo).")
+    if PUERTO_TRAZAS:
+        iniciar_reenvio_de_trazas()
     print(f"Ejecutor {NOMBRE} del grupo '{GRUPO}' esperando casos de {PLATAFORMA}…", flush=True)
     pausa = 2
     while True:

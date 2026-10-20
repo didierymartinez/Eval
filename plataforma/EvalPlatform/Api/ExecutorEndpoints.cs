@@ -48,11 +48,7 @@ public static class ExecutorEndpoints
             {
                 return Results.Json(new { error = "La API de ejecutores está apagada: configura Ejecutores__Token en el servidor de la plataforma." }, statusCode: 503);
             }
-            HttpRequest request = context.HttpContext.Request;
-            string? given = request.Headers["X-Ejecutor-Token"].FirstOrDefault()
-                ?? request.Headers.Authorization.FirstOrDefault()?.Replace("Bearer ", "", StringComparison.OrdinalIgnoreCase);
-            if (given is null || !System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(
-                    System.Text.Encoding.UTF8.GetBytes(given.Trim()), System.Text.Encoding.UTF8.GetBytes(expected)))
+            if (!context.HttpContext.RequestServices.GetRequiredService<IOptions<ExecutorOptions>>().Value.Accepts(context.HttpContext.Request))
             {
                 return Results.Json(new { error = "Token de ejecutor inválido." }, statusCode: 401);
             }

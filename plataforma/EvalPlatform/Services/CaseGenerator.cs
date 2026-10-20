@@ -10,7 +10,8 @@ public sealed record GenerateCasesInput(
     string Description,
     string? Tools,
     string? Knowledge,
-    int? Count);
+    int? Count,
+    int? JudgeId = null);
 
 // Arma un primer borrador de casos con el modelo juez. Es un punto de partida: hay que revisarlo y corregirlo antes de confiar en él.
 public static class CaseGenerator

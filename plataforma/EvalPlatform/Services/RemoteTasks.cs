@@ -12,6 +12,16 @@ public sealed class ExecutorOptions
 {
     // Token que deben enviar los ejecutores. Sin token configurado, la API de ejecutores está apagada.
     public string? Token { get; set; }
+
+    // El token que mandó un ejecutor (X-Ejecutor-Token o Authorization: Bearer) es el configurado.
+    public bool Accepts(HttpRequest request)
+    {
+        string? given = request.Headers["X-Ejecutor-Token"].FirstOrDefault()
+            ?? request.Headers.Authorization.FirstOrDefault()?.Replace("Bearer ", "", StringComparison.OrdinalIgnoreCase);
+        return !string.IsNullOrWhiteSpace(Token) && given is not null
+            && System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(
+                System.Text.Encoding.UTF8.GetBytes(given.Trim()), System.Text.Encoding.UTF8.GetBytes(Token));
+    }
 }
 
 // Lo que recibe un ejecutor por cada caso.

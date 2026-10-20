@@ -141,6 +141,19 @@ function agentPlaceholders(agent) {
   return [...names];
 }
 
+// Juez IA: el del servidor (id vacío) o el de un equipo.
+function judgeSelect(judges, selectedId, onchange) {
+  const server = judges.servidor;
+  const serverLabel = !server.configurado ? `${server.nombre} — sin configurar`
+    : !server.permitido ? `${server.nombre} — no disponible en este servidor` : server.nombre;
+  return h('select', { onchange: (ev) => onchange(ev.target.value ? Number(ev.target.value) : null) },
+    h('option', { value: '', selected: !selectedId }, serverLabel),
+    judges.jueces.map((j) => h('option', { value: j.id, selected: j.id === selectedId }, `${j.name} (${j.model})`)));
+}
+
+const judgeUsable = (judges, judgeId) => !!judgeId || (judges.servidor.configurado && judges.servidor.permitido);
+const fmtTokens = (n) => (n == null ? '—' : Math.round(n).toLocaleString('es'));
+
 async function compareEvaluation(id, note) {
   try {
     const r = await api(`/evaluaciones/${id}/comparar`, { method: 'POST', body: { note: note || null } });
@@ -626,6 +639,13 @@ function pageDatasetNew() {
       const tools = area('Una por línea. Ej.:\nbuscar_base_conocimiento\ncrear_ticket\nenviar_correo', 3);
       const knowledge = area('Opcional: pega preguntas frecuentes, políticas o partes del manual para que los casos usen datos reales.', 5);
       const count = h('input', { type: 'number', min: 3, max: 50, value: 20 });
+      let judgeId = null;
+      const judgeBox = h('div');
+      api('/jueces').then((judges) => {
+        if (!judgeUsable(judges, null) && judges.jueces.length) judgeId = judges.jueces[0].id;
+        replace(judgeBox, field('Juez IA que genera los casos', judgeSelect(judges, judgeId, (v) => { judgeId = v; }), 'Los tokens se cuentan en el juez elegido.'));
+        button.disabled = !judgeUsable(judges, judgeId) && !judges.jueces.length;
+      }).catch(() => {});
       const mcpPicker = h('select', null, h('option', { value: '' }, '— Traer las herramientas de un servidor MCP —'));
       api('/agentes').then((agents) => agents.filter((x) => x.kind && x.kind !== 'http').forEach((x) => mcpPicker.append(h('option', { value: x.id }, x.name))));
       mcpPicker.onchange = async () => {
@@ -642,12 +662,11 @@ function pageDatasetNew() {
       };
       const button = h('button', {
         class: 'primary',
-        disabled: !catalog.estado.juezConfigurado,
         onclick: async () => {
           button.disabled = true;
           button.textContent = 'Generando… (puede tardar un minuto)';
           try {
-            const r = await api('/datasets/generar', { method: 'POST', body: { name: name.value, description: description.value, tools: tools.value, knowledge: knowledge.value, count: Number(count.value) } });
+            const r = await api('/datasets/generar', { method: 'POST', body: { name: name.value, description: description.value, tools: tools.value, knowledge: knowledge.value, count: Number(count.value), judgeId } });
             toast(`Se generaron ${r.rowCount} casos. Revísalos antes de usarlos.`);
             go(`#/casos/${r.id}`);
           } catch (e) {
@@ -658,15 +677,14 @@ function pageDatasetNew() {
         },
       }, 'Generar casos');
       replace(body, tabs,
-        catalog.estado.juezConfigurado
-          ? h('div', { class: 'notice info small' }, 'El modelo arma un primer borrador con preguntas frecuentes, casos límite y casos que el agente debe escalar o rechazar. Revísalo: descárgalo en Excel, corrige lo que no esté bien y vuelve a subirlo (o pásalo a un Google Sheet).')
-          : h('div', { class: 'notice warn' }, 'Para generar casos con IA hay que configurar el juez IA en el servidor (ver README, sección "Juez IA").'),
+        h('div', { class: 'notice info small' }, 'El modelo arma un primer borrador con preguntas frecuentes, casos límite y casos que el agente debe escalar o rechazar. Revísalo: descárgalo en Excel, corrige lo que no esté bien y vuelve a subirlo (o pásalo a un Google Sheet). Necesita un juez IA: el del servidor o el de tu equipo (menú Jueces IA).'),
         field('Nombre', name),
         field('Qué hace el agente', description),
         h('div', { class: 'grid-2' },
           field('Herramientas que puede usar', h('div', null, tools, h('div', { style: { marginTop: '6px' } }, mcpPicker))),
           field('Cantidad de casos', count, 'Entre 3 y 50.')),
         field('Información que tiene disponible', knowledge),
+        judgeBox,
         button);
     } else {
       const url = h('input', { type: 'url', placeholder: 'https://docs.google.com/spreadsheets/d/…' });
@@ -766,7 +784,7 @@ async function pageEvaluations() {
 
 async function pageEvaluation(id) {
   const { evaluation: e, runs, comparisons } = await api(`/evaluaciones/${id}`);
-  const [agents, datasets] = await Promise.all([api('/agentes'), api('/datasets')]);
+  const [agents, datasets, judges] = await Promise.all([api('/agentes'), api('/datasets'), api('/jueces')]);
   const agent = agents.find((a) => a.id === e.agentId);
   const agentName = (agentId) => agents.find((a) => a.id === agentId)?.name || '(agente borrado)';
   const dataset = datasets.find((d) => d.id === e.datasetId);
@@ -809,6 +827,9 @@ async function pageEvaluation(id) {
           c.blocking ? null : h('span', { class: 'badge skip', style: { marginLeft: '6px' } }, 'informativa'));
       })),
       e.repetitions > 1 ? h('p', { class: 'muted small' }, `Cada caso se ejecuta ${e.repetitions} veces.`) : null,
+      e.checks.some((c) => checkInfo(c.type)?.usesJudge)
+        ? h('p', { class: 'muted small' }, 'Juez IA: ', e.judgeId ? h('a', { href: `#/jueces/${e.judgeId}` }, judges.jueces.find((j) => j.id === e.judgeId)?.name || '(borrado)') : judges.servidor.nombre)
+        : null,
       e.variants.length ? [
         h('h3', { style: { marginTop: '14px' } }, 'Variantes'),
         h('ul', null, e.variants.map((v, i) => h('li', null,
@@ -889,11 +910,15 @@ function suggestChecks(columns) {
 }
 
 async function pageEvaluationForm(id) {
-  const [agents, datasets] = await Promise.all([api('/agentes'), api('/datasets')]);
+  const [agents, datasets, judges] = await Promise.all([api('/agentes'), api('/datasets'), api('/jueces')]);
   const e = id ? (await api(`/evaluaciones/${id}`)).evaluation : {
     name: '', agentId: agents[0]?.id, datasetId: Number(query().get('dataset')) || datasets[0]?.id,
     inputColumn: '', checks: [], repetitions: 1, variants: [],
   };
+  // Una evaluación importada no tiene agente: se propone el primero.
+  if (!agents.some((a) => a.id === Number(e.agentId))) e.agentId = agents[0]?.id;
+  // Si el juez del servidor no se puede usar, se propone el primero de los equipos.
+  if (!id && !judgeUsable(judges, null) && judges.jueces.length) e.judgeId = judges.jueces[0].id;
   // Los parámetros se editan como pares para poder tener filas vacías mientras se escriben.
   e.variants = (e.variants || []).map((v) => ({ ...v, pairs: Object.entries(v.parameters || {}) }));
   if (!agents.length || !datasets.length) {
@@ -1010,6 +1035,7 @@ async function pageEvaluationForm(id) {
       agentId: Number(e.agentId),
       datasetId: Number(e.datasetId),
       repetitions: Number(e.repetitions) || 1,
+      judgeId: e.judgeId || null,
       variants: e.variants.map((v) => ({
         name: v.name,
         agentId: v.agentId ? Number(v.agentId) : null,
@@ -1050,7 +1076,10 @@ async function pageEvaluationForm(id) {
             cols.map((c) => h('option', { value: c, selected: c === e.inputColumn }, c))),
             h('span', null, 'Llega al agente como ', h('code', null, '{{input}}'), '.')),
           field('Repeticiones por caso', h('input', { type: 'number', min: 1, max: 10, value: e.repetitions, oninput: (ev) => (e.repetitions = ev.target.value) }),
-            'Los modelos no responden siempre igual. Con 3 ves si un caso pasa siempre o solo a veces.'))),
+            'Los modelos no responden siempre igual. Con 3 ves si un caso pasa siempre o solo a veces.')),
+        h('div', { class: 'grid-2' },
+          field('Juez IA', judgeSelect(judges, e.judgeId, (v) => { e.judgeId = v; draw(); }),
+            ['Califica las comparaciones (IA) y (RAG). Los tokens se cuentan en el juez elegido: cada equipo puede usar ', h('a', { href: '#/jueces' }, 'el suyo'), '.']))),
       h('h2', null, 'Variantes a comparar (opcional)'),
       h('p', { class: 'muted', style: { marginTop: 0 } }, 'Corre los mismos casos con distintas configuraciones y míralas lado a lado: otro modelo, otro prompt, más o menos documentos, con o sin base de conocimiento. Cada parámetro llega al agente como ', h('code', null, '{{nombre}}'), '. Para números o booleanos en el cuerpo JSON usa ', h('code', null, '"{{json:nombre}}"'), '.'),
       e.variants.map(variantCard),
@@ -1058,9 +1087,11 @@ async function pageEvaluationForm(id) {
       h('div', { class: 'actions', style: { marginBottom: '8px' } },
         h('button', { type: 'button', onclick: addVariant }, '+ Agregar variante')),
       h('h2', null, 'Qué comparar en cada respuesta'),
-      usesJudge && !catalog.estado.juezConfigurado
-        ? h('div', { class: 'notice warn' }, 'Hay comparaciones con juez IA, pero el juez no está configurado en el servidor. Esas comparaciones se van a omitir hasta que se configure (ver README, sección "Juez IA").')
-        : null,
+      usesJudge && !e.judgeId && !judges.servidor.configurado
+        ? h('div', { class: 'notice warn' }, 'Hay comparaciones con juez IA, pero el juez del servidor no está configurado. Esas comparaciones se van a omitir: elige el juez de tu equipo arriba o configura el del servidor (ver README, sección "Juez IA").')
+        : usesJudge && !e.judgeId && !judges.servidor.permitido
+          ? h('div', { class: 'notice warn' }, 'Este servidor no permite usar su juez en las evaluaciones. Elige el juez de tu equipo arriba (o créalo en ', h('a', { href: '#/jueces' }, 'Jueces IA'), ').')
+          : null,
       e.checks.map(checkCard),
       e.checks.length ? null : h('div', { class: 'notice info' }, 'Agrega al menos una comparación.'),
       h('div', { class: 'actions', style: { marginBottom: '24px' } },
@@ -1079,8 +1110,32 @@ async function pageEvaluationForm(id) {
 // ---------- Resultados ----------
 
 async function pageRuns() {
-  const runs = await api('/corridas?limite=100');
-  render(pageHead('Resultados', 'Todas las corridas, de la más reciente a la más antigua.'), runsTable(runs));
+  const [runs, evaluations] = await Promise.all([api('/corridas?limite=100'), api('/evaluaciones')]);
+  const file = h('input', { type: 'file', accept: '.json,application/json' });
+  const target = h('select', null,
+    h('option', { value: '' }, 'Crear una evaluación nueva con sus casos'),
+    evaluations.map((e) => h('option', { value: e.id }, `Agregar a: ${e.name}`)));
+  const importBox = h('details', { class: 'card', style: { marginTop: 0 } },
+    h('summary', null, 'Importar resultados de otra plataforma'),
+    h('p', { class: 'muted small' }, 'El archivo sale del botón «Exportar» de una corrida o una comparativa. Sirve para traer resultados de una red aislada (sin salida) a esta plataforma.'),
+    h('div', { class: 'grid-2' }, field('Archivo (.json)', file), field('Dónde', target)),
+    h('button', {
+      class: 'primary',
+      onclick: async () => {
+        if (!file.files[0]) return toast('Elige el archivo exportado.', true);
+        const form = new FormData();
+        form.append('archivo', file.files[0]);
+        if (target.value) form.append('evaluacion', target.value);
+        try {
+          const r = await api('/importar', { method: 'POST', form });
+          toast(`Se importaron ${r.runIds.length} corrida(s).`);
+          go(r.comparisonId ? `#/comparativas/${r.comparisonId}` : `#/resultados/${r.runIds[0]}`);
+        } catch (e) {
+          toast(e.message, true);
+        }
+      },
+    }, 'Importar'));
+  render(pageHead('Resultados', 'Todas las corridas, de la más reciente a la más antigua.'), importBox, runsTable(runs));
 }
 
 async function pageRun(id) {
@@ -1120,8 +1175,10 @@ async function pageRun(id) {
       pageHead(run.evaluationName, `Corrida #${run.id} · ${run.agentName} · ${run.datasetName} · ${fmtDate(run.createdAt)}`,
         active ? h('button', { onclick: async () => { await api(`/corridas/${id}/cancelar`, { method: 'POST' }); toast('Cancelando…'); } }, 'Cancelar') : null,
         !active ? h('a', { class: 'button', href: `/api/corridas/${id}/excel` }, 'Descargar Excel') : null,
+        !active ? h('a', { class: 'button', href: `/api/corridas/${id}/exportar`, title: 'Archivo para importar en otra plataforma (por ejemplo, desde una red aislada)' }, 'Exportar') : null,
         h('button', { onclick: () => runEvaluation(run.evaluationId) }, '▶ Ejecutar de nuevo'),
         h('a', { class: 'button', href: `#/evaluaciones/${run.evaluationId}` }, 'Ver evaluación')),
+      run.importedFrom ? h('div', { class: 'notice info' }, h('strong', null, 'Importada de: '), run.importedFrom) : null,
       run.variant ? h('div', { class: 'notice info' },
         h('strong', null, 'Variante: '), run.variant, paramChips(run.parameters),
         run.comparisonId ? [' · ', h('a', { href: `#/comparativas/${run.comparisonId}` }, 'Ver la comparativa con las demás variantes')] : null) : null,
@@ -1146,6 +1203,9 @@ async function pageRun(id) {
           h('div', { class: 'value' }, Math.round(summary.averageTokens).toLocaleString('es')),
           h('div', { class: 'label' }, 'tokens promedio por caso',
             summary.previousAverageTokens != null ? ` (${summary.averageTokens <= summary.previousAverageTokens ? '' : '+'}${Math.round(((summary.averageTokens - summary.previousAverageTokens) / summary.previousAverageTokens) * 100)}% vs anterior)` : null)) : null,
+        summary.judgeTokens != null ? h('div', { class: 'stat' },
+          h('div', { class: 'value' }, fmtTokens(summary.judgeTokens)),
+          h('div', { class: 'label' }, `tokens del juez${run.judgeName ? ` (${run.judgeName})` : ''}`)) : null,
         summary.averageModelCalls != null ? h('div', { class: 'stat' },
           h('div', { class: 'value' }, summary.averageModelCalls.toLocaleString('es', { maximumFractionDigits: 1 })),
           h('div', { class: 'label' }, 'llamadas al modelo por caso (trazas)')) : null,
@@ -1265,6 +1325,7 @@ async function pageComparison(id, runIds) {
         `${comparison ? `#${comparison.id} · ` : ''}${first.datasetName} · ${fmtDate(comparison?.createdAt || first.createdAt)} · ${variants.length} variantes`,
         comparison && !report.finished ? h('button', { onclick: async () => { await api(`/comparativas/${id}/cancelar`, { method: 'POST' }); toast('Cancelando…'); } }, 'Cancelar') : null,
         comparison && report.finished ? h('a', { class: 'button', href: `/api/comparativas/${id}/excel` }, 'Descargar Excel') : null,
+        comparison && report.finished ? h('a', { class: 'button', href: `/api/comparativas/${id}/exportar`, title: 'Archivo para importar en otra plataforma' }, 'Exportar') : null,
         h('a', { class: 'button', href: `#/evaluaciones/${first.evaluationId}` }, 'Ver evaluación'),
         comparison && report.finished ? h('button', { class: 'danger', onclick: () => confirmAndDelete('¿Eliminar esta comparativa y sus corridas?', `/comparativas/${id}`, `#/evaluaciones/${first.evaluationId}`) }, 'Eliminar') : null),
       comparison?.note ? h('div', { class: 'notice info' }, h('strong', null, 'Qué se compara: '), comparison.note) : null,
@@ -1343,6 +1404,98 @@ async function pageComparison(id, runIds) {
   await load();
 }
 
+// ---------- Jueces IA ----------
+
+// Uso del mes contra el límite.
+function usageBar(used, limit) {
+  if (!limit) return h('span', null, `${fmtTokens(used)} tokens`, h('span', { class: 'small muted' }, ' · sin límite'));
+  const ratio = Math.min(1, used / limit);
+  return h('div', null,
+    h('div', { class: 'small' }, `${fmtTokens(used)} de ${fmtTokens(limit)} tokens`),
+    h('div', { class: 'bar', style: { marginTop: '4px' } },
+      h('span', { class: ratio >= 1 ? 'bad' : ratio >= 0.8 ? 'warn' : 'ok', style: { width: `${ratio * 100}%` } })));
+}
+
+async function pageJudges() {
+  const data = await api('/jueces');
+  const s = data.servidor;
+  render(
+    pageHead('Jueces IA', `El modelo que califica las comparaciones (IA) y (RAG) y genera casos. Uso de ${data.mes}.`,
+      h('a', { class: 'button primary', href: '#/jueces/nuevo' }, '+ Juez de mi equipo')),
+    h('div', { class: 'notice info' },
+      'Cada equipo puede registrar su propio juez (su endpoint, su modelo y su clave) y elegirlo en sus evaluaciones: así los tokens se cobran a su cuenta y no a la del servidor. ',
+      'Sirve cualquier API compatible con OpenAI, incluso un modelo local (Ollama, vLLM) sin costo por token.'),
+    h('div', { class: 'table-wrap' }, h('table', null,
+      h('thead', null, h('tr', null, h('th', null, 'Juez'), h('th', null, 'Modelo'), h('th', null, 'Uso este mes'), h('th', null, 'Llamadas'), h('th', null, 'Evaluaciones'))),
+      h('tbody', null,
+        h('tr', null,
+          h('td', null, h('strong', null, 'Juez del servidor'),
+            h('div', { class: 'small muted' }, !s.configurado ? 'Sin configurar (Juez__Endpoint, Juez__Model, Juez__ApiKey)' : !s.permitido ? 'No disponible para evaluaciones en este servidor' : 'Lo configura quien administra el servidor')),
+          h('td', { class: 'mono' }, s.modelo || '—'),
+          h('td', null, usageBar(s.tokensMes, s.limiteTokensMes)),
+          h('td', null, s.llamadasMes),
+          h('td', null, s.evaluaciones)),
+        data.jueces.map((j) => h('tr', { class: 'clickable', onclick: () => go(`#/jueces/${j.id}`) },
+          h('td', null, h('strong', null, j.name), h('div', { class: 'small muted' }, j.endpoint || 'api.openai.com')),
+          h('td', { class: 'mono' }, j.model),
+          h('td', null, usageBar(j.tokensMes, j.monthlyTokenLimit)),
+          h('td', null, j.llamadasMes),
+          h('td', null, j.evaluaciones)))))),
+    h('p', { class: 'muted small' }, 'Si el modelo no informa cuántos tokens usó, se estiman (unos 4 caracteres por token). Al llegar al límite, las comparaciones con juez quedan como «Error» hasta el mes siguiente o hasta que se suba el límite.'));
+}
+
+async function pageJudgeForm(id) {
+  const data = await api('/jueces');
+  const existing = id ? data.jueces.find((j) => j.id === id) : null;
+  if (id && !existing) throw new Error('El juez no existe.');
+  const j = existing ? { ...existing, apiKey: '' } : { name: '', endpoint: '', model: '', apiKey: '', monthlyTokenLimit: null };
+  const result = h('div');
+  const body = () => ({ name: j.name, endpoint: j.endpoint || null, model: j.model, apiKey: j.apiKey || null, monthlyTokenLimit: j.monthlyTokenLimit || null });
+
+  const test = async () => {
+    replace(result, h('div', { class: 'notice info' }, 'Probando…'));
+    try {
+      const r = await api('/jueces/probar', { method: 'POST', body: { id: id || null, endpoint: j.endpoint || null, model: j.model || null, apiKey: j.apiKey || null } });
+      replace(result, r.ok
+        ? h('div', { class: 'notice ok' }, h('strong', null, 'Funciona. '), `Respondió «${(r.respuesta || '').slice(0, 80)}» en ${(r.latencyMs / 1000).toFixed(1)} s con ${fmtTokens(r.tokens)} tokens.`)
+        : h('div', { class: 'notice bad' }, h('strong', null, 'No funcionó: '), r.error));
+    } catch (e) {
+      replace(result, h('div', { class: 'notice bad' }, e.message));
+    }
+  };
+  const save = async () => {
+    try {
+      if (id) await api(`/jueces/${id}`, { method: 'PUT', body: body() });
+      else await api('/jueces', { method: 'POST', body: body() });
+      toast('Juez guardado');
+      go('#/jueces');
+    } catch (e) {
+      toast(e.message, true);
+    }
+  };
+  const input = (key, attrs) => h('input', { type: 'text', value: j[key] ?? '', ...attrs, oninput: (ev) => (j[key] = ev.target.value) });
+
+  render(
+    pageHead(id ? `Juez: ${existing.name}` : 'Nuevo juez IA', 'Un modelo con API compatible con OpenAI, con la clave de tu equipo.'),
+    h('div', { class: 'card' },
+      field('Nombre', input('name', { placeholder: 'Ej. Equipo de soporte · gpt-5-mini' })),
+      h('div', { class: 'grid-2' },
+        field('Endpoint', input('endpoint', { placeholder: 'Vacío = https://api.openai.com/v1/' }),
+          ['Ej.: ', h('code', null, 'https://<recurso>.openai.azure.com/openai/v1/'), ', ', h('code', null, 'http://ollama:11434/v1/'), '.']),
+        field('Modelo', input('model', { placeholder: 'Ej. gpt-5-mini, llama3.1' }))),
+      h('div', { class: 'grid-2' },
+        field('Clave de la API', input('apiKey', { type: 'password', autocomplete: 'off', placeholder: existing?.claveGuardada ? `Guardada (${existing.claveGuardada}); escribe para reemplazarla` : 'Vacía si el modelo no pide clave' }),
+          ['Se guarda cifrada y no se vuelve a mostrar. También puede ser ', h('code', null, '{{env:VARIABLE}}'), ' para leerla del servidor.']),
+        field('Límite de tokens por mes', h('input', { type: 'number', min: 1, step: 1000, value: j.monthlyTokenLimit ?? '', placeholder: 'Vacío = sin límite', oninput: (ev) => (j.monthlyTokenLimit = ev.target.value ? Number(ev.target.value) : null) }),
+          existing ? ['Este mes: ', fmtTokens(existing.tokensMes), ' tokens en ', existing.llamadasMes, ' llamadas.'] : 'Al llegar al límite, las comparaciones con juez quedan como «Error» hasta el mes siguiente.')),
+      result,
+      h('div', { class: 'actions' },
+        h('button', { class: 'primary', onclick: save }, 'Guardar'),
+        h('button', { onclick: test }, 'Probar'),
+        h('a', { class: 'button', href: '#/jueces' }, 'Cancelar'),
+        existing ? h('button', { class: 'danger', onclick: () => confirmAndDelete('¿Eliminar este juez?', `/jueces/${id}`, '#/jueces') }, 'Eliminar') : null)));
+}
+
 // ---------- Navegación ----------
 
 const routes = [
@@ -1360,6 +1513,9 @@ const routes = [
   [/^\/resultados$/, pageRuns, 'resultados'],
   [/^\/resultados\/(\d+)$/, (m) => pageRun(Number(m[1])), 'resultados'],
   [/^\/comparativas\/(\d+)$/, (m) => pageComparison(Number(m[1])), 'evaluaciones'],
+  [/^\/jueces$/, pageJudges, 'jueces'],
+  [/^\/jueces\/nuevo$/, () => pageJudgeForm(null), 'jueces'],
+  [/^\/jueces\/(\d+)$/, (m) => pageJudgeForm(Number(m[1])), 'jueces'],
   [/^\/comparar$/, () => pageComparison(null, (query().get('corridas') || '').split(',').map(Number).filter(Boolean)), 'evaluaciones'],
 ];
 
@@ -1386,7 +1542,7 @@ async function init() {
   }
   document.getElementById('judge-status').replaceChildren(
     h('span', { class: `dot ${catalog.estado.juezConfigurado ? 'ok' : 'skip'}`, style: { width: '10px', height: '10px', marginRight: '6px' } }),
-    catalog.estado.juezConfigurado ? `Juez IA: ${catalog.estado.modeloJuez}` : 'Juez IA sin configurar');
+    catalog.estado.juezConfigurado ? `Juez del servidor: ${catalog.estado.modeloJuez}` : 'Juez del servidor sin configurar');
   window.addEventListener('hashchange', route);
   route();
 }

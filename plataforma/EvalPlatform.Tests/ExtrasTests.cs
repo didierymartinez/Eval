@@ -71,8 +71,12 @@ public class SchemaUpgradeTests
     [Theory]
     [InlineData("RunTasks")]
     [InlineData("Comparisons")]
+    [InlineData("Judges")]
+    [InlineData("JudgeUsages")]
     public async Task Las_tablas_manuales_coinciden_con_las_de_EF(string table)
     {
+        // El nombre de la tabla viene de InlineData, no de una entrada externa.
+#pragma warning disable EF1002
         async Task<List<string>> Columns(string path, bool viaUpgrade)
         {
             var options = new DbContextOptionsBuilder<EvalDbContext>().UseSqlite($"Data Source={path}").Options;
@@ -85,6 +89,7 @@ public class SchemaUpgradeTests
             }
             return await db.Database.SqlQueryRaw<string>($"""SELECT name || ' ' || type || ' ' || "notnull" AS "Value" FROM pragma_table_info('{table}') ORDER BY cid""").ToListAsync();
         }
+#pragma warning restore EF1002
         string a = Path.Combine(Path.GetTempPath(), $"eval-a-{Guid.NewGuid():N}.db"), b = Path.Combine(Path.GetTempPath(), $"eval-b-{Guid.NewGuid():N}.db");
         try
         {
@@ -121,6 +126,10 @@ public class SchemaUpgradeTests
                     ALTER TABLE "Runs" DROP COLUMN "Parameters"; ALTER TABLE "Runs" DROP COLUMN "ComparisonId";
                     ALTER TABLE "Evaluations" DROP COLUMN "Variants";
                     DROP TABLE "Comparisons";
+                    ALTER TABLE "Evaluations" DROP COLUMN "JudgeId"; ALTER TABLE "Runs" DROP COLUMN "JudgeId";
+                    ALTER TABLE "Runs" DROP COLUMN "JudgeName"; ALTER TABLE "Runs" DROP COLUMN "ImportedFrom";
+                    ALTER TABLE "RunResults" DROP COLUMN "JudgeTokens";
+                    DROP TABLE "Judges"; DROP TABLE "JudgeUsages";
                     INSERT INTO "Evaluations" ("Name", "AgentId", "DatasetId", "InputColumn", "Checks", "Repetitions", "CreatedAt") VALUES ('vieja', 1, 1, 'input', '[]', 1, 0);
                     INSERT INTO "Agents" ("Name", "Url", "Method", "Headers", "BodyTemplate", "ResponsePath", "TimeoutSeconds", "CreatedAt") VALUES ('viejo', 'http://x', 'POST', '{{}}', '', '', 10, 0);
                     """);
@@ -149,6 +158,12 @@ public class SchemaUpgradeTests
                 Assert.Null(corrida.Variant);
                 Assert.Empty(corrida.Parameters);
                 db.Comparisons.Add(new Comparison { EvaluationId = vieja.Id, EvaluationName = "vieja" });
+                await db.SaveChangesAsync();
+                // Antes de los jueces por equipo: el juez del servidor.
+                Assert.Null(vieja.JudgeId);
+                Assert.Null(corrida.JudgeName);
+                db.Judges.Add(new Judge { Name = "equipo", Model = "m" });
+                db.JudgeUsages.Add(new JudgeUsage { JudgeKey = "servidor", Month = "2026-10", Tokens = 5 });
                 await db.SaveChangesAsync();
             }
         }

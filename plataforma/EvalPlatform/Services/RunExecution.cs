@@ -104,6 +104,8 @@ public sealed class RunExecutor(
     CheckRunner checks,
     RunRecorder recorder,
     TraceStore traces,
+    JudgeResolver judges,
+    JudgeBudget budget,
     IOptions<RunnerOptions> options,
     ILogger<RunExecutor> logger)
 {
@@ -229,10 +231,19 @@ public sealed class RunExecutor(
             return result;
         }
 
-        var data = new CaseData(agent, input, row, invocation);
+        // Solo se busca el juez si alguna comparación lo usa.
+        JudgeSession? judge = run.Checks.Any(c => CheckTypes.Find(c.Type)?.UsesJudge == true)
+            ? new JudgeSession(await judges.ResolveAsync(run.JudgeId, ct), budget)
+            : null;
+        var data = new CaseData(agent, input, row, invocation, judge);
         foreach (CheckDefinition check in run.Checks)
         {
             result.Checks.Add(await checks.RunAsync(check, data, ct));
+        }
+        if (judge is { Calls: > 0 })
+        {
+            result.JudgeTokens = (int)Math.Min(judge.Tokens, int.MaxValue);
+            await judge.CommitAsync(ct);
         }
 
         List<CheckResult> blocking = result.Checks.Where(c => c.Blocking && c.Status != CheckStatus.Skipped).ToList();

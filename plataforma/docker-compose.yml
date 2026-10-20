@@ -1,0 +1,37 @@
+# Plataforma de evaluaciones en un servidor. Los datos (base SQLite y llaves de cifrado de las
+# claves de los jueces) quedan en el volumen eval-datos: actualizar es cambiar la imagen.
+#
+#   cp .env.example .env                      # y completa los valores
+#   docker compose up -d                      # arranca (o actualiza a la imagen de EVAL_IMAGEN)
+#   docker compose pull && docker compose up -d
+#
+# Un solo contenedor por volumen: no levantes dos réplicas sobre la misma base.
+services:
+  evaluaciones:
+    image: ${EVAL_IMAGEN:-evaluaciones:latest}
+    build:
+      context: ..
+      dockerfile: plataforma/Dockerfile
+    restart: unless-stopped
+    ports:
+      # Detrás de un proxy con HTTPS y SSO, publícalo solo en 127.0.0.1.
+      - "${EVAL_PUERTO:-127.0.0.1:5080}:8080"
+    env_file: .env
+    volumes:
+      - eval-datos:/datos
+
+  # Ejecutor para una red que no alcanza la plataforma directamente (misma imagen).
+  # En la máquina de esa red: docker compose --profile ejecutor up -d ejecutor
+  ejecutor:
+    profiles: ["ejecutor"]
+    image: ${EVAL_IMAGEN:-evaluaciones:latest}
+    restart: unless-stopped
+    command: ["ejecutor", "--plataforma", "${EVAL_PLATAFORMA:-https://evaluaciones.miempresa}", "--grupo", "${EVAL_GRUPO:-mi-red}", "--trazas", "4318"]
+    environment:
+      EVAL_EJECUTOR_TOKEN: ${EVAL_EJECUTOR_TOKEN:-}
+    ports:
+      # Los agentes de esta red mandan sus trazas aquí: OTEL_EXPORTER_OTLP_ENDPOINT=http://<esta-máquina>:4318
+      - "4318:4318"
+
+volumes:
+  eval-datos:

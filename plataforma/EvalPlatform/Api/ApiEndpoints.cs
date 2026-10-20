@@ -36,7 +36,7 @@ public sealed record RunInput(string? Note, string? Variant = null);
 // Variants: nombres de las variantes a comparar (vacío = todas).
 public sealed record CompareInput(string? Note, List<string>? Variants);
 
-public sealed record EvaluationInput(string Name, int AgentId, int DatasetId, string InputColumn, List<CheckDefinition> Checks, int? Repetitions, List<Variant>? Variants = null);
+public sealed record EvaluationInput(string Name, int AgentId, int DatasetId, string InputColumn, List<CheckDefinition> Checks, int? Repetitions, List<Variant>? Variants = null, int? JudgeId = null);
 
 public sealed record AgentTemplate(string Id, string Name, string Description, AgentInput Agent);
 
@@ -46,7 +46,12 @@ public static partial class ApiEndpoints
     {
         RouteGroupBuilder api = app.MapGroup("/api");
 
-        api.MapGet("/estado", (IJudgeProvider judge) => new { juezConfigurado = judge.Get() is not null, modeloJuez = judge.ModelName });
+        api.MapGet("/estado", (IJudgeProvider judge, JudgeResolver judges) => new
+        {
+            juezConfigurado = judge.Get() is not null,
+            modeloJuez = judge.ModelName,
+            juezServidorPermitido = judges.ServerAllowed,
+        });
         api.MapGet("/comparaciones", () => CheckTypes.All);
         api.MapGet("/plantillas-agente", () => s_templates);
 
@@ -55,6 +60,8 @@ public static partial class ApiEndpoints
         MapEvaluations(api.MapGroup("/evaluaciones"));
         MapRuns(api.MapGroup("/corridas"));
         MapComparisons(api.MapGroup("/comparativas"));
+        MapJudges(api.MapGroup("/jueces"));
+        MapTransfer(api);
     }
 
     private static IResult Bad(string error) => Results.BadRequest(new { error });
@@ -350,24 +357,31 @@ public static partial class ApiEndpoints
             return Results.Ok(new { dataset.Id, rowCount = dataset.Rows.Count });
         });
 
-        g.MapPost("/generar", async (GenerateCasesInput input, IJudgeProvider judgeProvider, EvalDbContext db, CancellationToken ct) =>
+        g.MapPost("/generar", async (GenerateCasesInput input, JudgeResolver judges, JudgeBudget budget, EvalDbContext db, CancellationToken ct) =>
         {
-            if (judgeProvider.Get() is not { } judge)
-            {
-                return Bad("Para generar casos con IA hay que configurar el juez IA (ver README, sección Juez IA).");
-            }
             if (string.IsNullOrWhiteSpace(input.Name) || string.IsNullOrWhiteSpace(input.Description))
             {
                 return Bad("Ponle un nombre y describe qué hace el agente.");
             }
+            var session = new JudgeSession(await judges.ResolveAsync(input.JudgeId, ct), budget);
+            if (await session.BlockedAsync(ct) is { } blocked)
+            {
+                return Bad(blocked.Status == CheckStatus.Skipped
+                    ? "Para generar casos con IA hay que configurar un juez IA: el del servidor (ver README, sección Juez IA) o el de tu equipo (menú Jueces IA)."
+                    : blocked.Reason);
+            }
             ImportedTable table;
             try
             {
-                table = await CaseGenerator.GenerateAsync(judge, input, ct);
+                table = await CaseGenerator.GenerateAsync(session.Chat!, input, ct);
             }
             catch (ImportException ex)
             {
                 return Bad(ex.Message);
+            }
+            finally
+            {
+                await session.CommitAsync(CancellationToken.None);
             }
             var dataset = new Dataset { Name = input.Name.Trim(), SourceFileName = "generado con IA", Columns = table.Columns, Rows = table.Rows };
             db.Datasets.Add(dataset);
@@ -510,7 +524,7 @@ public static partial class ApiEndpoints
             return Results.NoContent();
         });
 
-        g.MapPost("/{id:int}/ejecutar", async (int id, RunInput? input, EvalDbContext db, RunQueue queue) =>
+        g.MapPost("/{id:int}/ejecutar", async (int id, RunInput? input, EvalDbContext db, RunQueue queue, IServiceProvider services) =>
         {
             if (await db.Evaluations.FindAsync(id) is not Evaluation evaluation)
             {
@@ -525,7 +539,7 @@ public static partial class ApiEndpoints
                     return Bad($"La evaluación no tiene una variante llamada '{input.Variant.Trim()}'.");
                 }
             }
-            var (runs, error) = await PrepareRunsAsync(evaluation, [variant], input?.Note, null, db);
+            var (runs, error) = await PrepareRunsAsync(evaluation, [variant], input?.Note, null, db, services);
             if (error is not null)
             {
                 return Bad(error);
@@ -536,7 +550,7 @@ public static partial class ApiEndpoints
         });
 
         // Corre las mismas pruebas con cada variante (una corrida por variante) para verlas lado a lado.
-        g.MapPost("/{id:int}/comparar", async (int id, CompareInput? input, EvalDbContext db, RunQueue queue) =>
+        g.MapPost("/{id:int}/comparar", async (int id, CompareInput? input, EvalDbContext db, RunQueue queue, IServiceProvider services) =>
         {
             if (await db.Evaluations.FindAsync(id) is not Evaluation evaluation)
             {
@@ -566,7 +580,7 @@ public static partial class ApiEndpoints
             };
             db.Comparisons.Add(comparison);
             await db.SaveChangesAsync();
-            var (runs, error) = await PrepareRunsAsync(evaluation, chosen.Cast<Variant?>().ToList(), input?.Note, comparison.Id, db);
+            var (runs, error) = await PrepareRunsAsync(evaluation, chosen.Cast<Variant?>().ToList(), input?.Note, comparison.Id, db, services);
             if (error is not null)
             {
                 db.Comparisons.Remove(comparison);
@@ -583,7 +597,7 @@ public static partial class ApiEndpoints
     }
 
     // Una corrida por variante (null = el agente de la evaluación sin parámetros). Las deja agregadas sin guardar.
-    private static async Task<(List<Run> Runs, string? Error)> PrepareRunsAsync(Evaluation evaluation, List<Variant?> variants, string? note, int? comparisonId, EvalDbContext db)
+    private static async Task<(List<Run> Runs, string? Error)> PrepareRunsAsync(Evaluation evaluation, List<Variant?> variants, string? note, int? comparisonId, EvalDbContext db, IServiceProvider services)
     {
         Dataset? dataset = await db.Datasets.FindAsync(evaluation.DatasetId);
         if (dataset is null)
@@ -593,6 +607,19 @@ public static partial class ApiEndpoints
         if (dataset.Rows.Count == 0)
         {
             return ([], "El dataset no tiene casos.");
+        }
+        int maxCases = services.GetRequiredService<Microsoft.Extensions.Options.IOptions<LimitOptions>>().Value.CasosPorEjecucion;
+        long cases = (long)dataset.Rows.Count * Math.Max(1, evaluation.Repetitions) * variants.Count;
+        if (maxCases > 0 && cases > maxCases)
+        {
+            return ([], $"Esta ejecución tendría {cases:N0} casos ({dataset.Rows.Count} casos × {Math.Max(1, evaluation.Repetitions)} repeticiones × {variants.Count} variante(s)) y el máximo de este servidor es {maxCases:N0}. Reduce casos, repeticiones o variantes.");
+        }
+        string? judgeName = null;
+        if (evaluation.Checks.Any(c => CheckTypes.Find(c.Type)?.UsesJudge == true))
+        {
+            judgeName = evaluation.JudgeId is int jid
+                ? (await db.Judges.FindAsync(jid))?.Name ?? "Juez borrado"
+                : services.GetRequiredService<JudgeResolver>().ServerName;
         }
         var runs = new List<Run>();
         foreach (Variant? variant in variants)
@@ -612,6 +639,8 @@ public static partial class ApiEndpoints
                 Variant = variant?.Name,
                 Parameters = new Dictionary<string, string>(variant?.Parameters ?? []),
                 ComparisonId = comparisonId,
+                JudgeId = evaluation.JudgeId,
+                JudgeName = judgeName,
                 Note = string.IsNullOrWhiteSpace(note) ? null : note.Trim(),
                 Checks = evaluation.Checks,
                 Total = dataset.Rows.Count * Math.Max(1, evaluation.Repetitions),
@@ -662,6 +691,10 @@ public static partial class ApiEndpoints
         if (input.Repetitions is < 1 or > 10)
         {
             return "Las repeticiones deben estar entre 1 y 10.";
+        }
+        if (input.JudgeId is int judgeId && !await db.Judges.AnyAsync(j => j.Id == judgeId))
+        {
+            return "El juez IA elegido no existe.";
         }
         return await ValidateVariantsAsync(input, db);
     }
@@ -722,12 +755,12 @@ public static partial class ApiEndpoints
 
     // Marcadores {{...}} que aparecen en la configuración del agente.
     private static HashSet<string> UsedPlaceholders(Agent agent) =>
-        new[] { agent.Url }
+        new string?[] { agent.Url }
             .Concat(agent.Kind switch
             {
-                AgentKinds.McpDirect => [agent.Mcp.ToolTemplate, agent.Mcp.ArgumentsTemplate],
-                AgentKinds.McpModel => [agent.Mcp.SystemPrompt, agent.Mcp.ModelName, agent.Mcp.ModelEndpoint, agent.Mcp.AllowedTools],
-                _ => new[] { agent.BodyTemplate },
+                AgentKinds.McpDirect => new string?[] { agent.Mcp.ToolTemplate, agent.Mcp.ArgumentsTemplate },
+                AgentKinds.McpModel => new string?[] { agent.Mcp.SystemPrompt, agent.Mcp.ModelName, agent.Mcp.ModelEndpoint, agent.Mcp.AllowedTools },
+                _ => new string?[] { agent.BodyTemplate },
             })
             .Concat(agent.Headers.Values)
             .SelectMany(Templates.Placeholders)
@@ -754,6 +787,7 @@ public static partial class ApiEndpoints
             Blocking = c.Blocking,
         }).ToList();
         evaluation.Repetitions = input.Repetitions ?? 1;
+        evaluation.JudgeId = input.JudgeId;
         evaluation.Variants = (input.Variants ?? []).Select(v => new Variant
         {
             Name = v.Name.Trim(),
@@ -776,6 +810,9 @@ public static partial class ApiEndpoints
         r.Variant,
         r.Parameters,
         r.ComparisonId,
+        r.JudgeId,
+        r.JudgeName,
+        r.ImportedFrom,
         r.Note,
         r.Executor,
         r.Status,

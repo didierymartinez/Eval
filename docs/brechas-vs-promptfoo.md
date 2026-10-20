@@ -83,6 +83,7 @@ La plataforma tiene 15 comparaciones. promptfoo tiene más de 50. Las que más v
 - **Auditoría** de quién cambió qué.
 - **Base de datos para muchos usuarios:** SQLite sirve para un equipo; para muchos, PostgreSQL o SQL Server.
 - **Tokens de ejecutor por grupo:** hoy hay uno solo compartido.
+- Ya resuelto para servicios compartidos: jueces por equipo con límite mensual de tokens, límite de casos por ejecución, y exportar e importar resultados entre plataformas.
 
 ---
 

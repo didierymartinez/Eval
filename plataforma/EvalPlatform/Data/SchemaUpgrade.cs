@@ -28,6 +28,11 @@ public static class SchemaUpgrade
         ("Runs", "Variant", "TEXT NULL"),
         ("Runs", "Parameters", "TEXT NOT NULL DEFAULT '{}'"),
         ("Runs", "ComparisonId", "INTEGER NULL"),
+        ("Evaluations", "JudgeId", "INTEGER NULL"),
+        ("Runs", "JudgeId", "INTEGER NULL"),
+        ("Runs", "JudgeName", "TEXT NULL"),
+        ("Runs", "ImportedFrom", "TEXT NULL"),
+        ("RunResults", "JudgeTokens", "INTEGER NULL"),
     ];
 
     // Tablas nuevas; mismo esquema que crea EnsureCreated (ver la prueba de migración).
@@ -55,6 +60,24 @@ public static class SchemaUpgrade
             "Note" TEXT NULL,
             "CreatedAt" INTEGER NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS "Judges" (
+            "Id" INTEGER NOT NULL CONSTRAINT "PK_Judges" PRIMARY KEY AUTOINCREMENT,
+            "Name" TEXT NOT NULL,
+            "Endpoint" TEXT NULL,
+            "Model" TEXT NOT NULL,
+            "ProtectedApiKey" TEXT NULL,
+            "MonthlyTokenLimit" INTEGER NULL,
+            "CreatedAt" INTEGER NOT NULL,
+            "UpdatedAt" INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS "JudgeUsages" (
+            "Id" INTEGER NOT NULL CONSTRAINT "PK_JudgeUsages" PRIMARY KEY AUTOINCREMENT,
+            "JudgeKey" TEXT NOT NULL,
+            "Month" TEXT NOT NULL,
+            "Tokens" INTEGER NOT NULL,
+            "Calls" INTEGER NOT NULL
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS "IX_JudgeUsages_JudgeKey_Month" ON "JudgeUsages" ("JudgeKey", "Month");
         """;
 
     public static async Task ApplyAsync(EvalDbContext db)

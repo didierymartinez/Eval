@@ -17,18 +17,20 @@ public sealed class TraceOptions
 // Receptor OTLP/HTTP de trazas (POST /v1/traces), en protobuf o JSON y con o sin gzip.
 // Configura en el agente OTEL_EXPORTER_OTLP_ENDPOINT=<url de la plataforma>: los exportadores
 // agregan /v1/traces solos. Solo se guardan los spans de trazas que inició la plataforma.
+// Si el agente no alcanza la plataforma, puede mandarlas a su ejecutor (--trazas), que las reenvía
+// con el token de ejecutor.
 public static class TraceEndpoints
 {
     public static void MapTraceReceiver(this WebApplication app)
     {
-        app.MapPost("/v1/traces", async (HttpRequest request, TraceStore store, IOptions<TraceOptions> options, ILoggerFactory logs) =>
+        app.MapPost("/v1/traces", async (HttpRequest request, TraceStore store, IOptions<TraceOptions> options, IOptions<ExecutorOptions> executors, ILoggerFactory logs) =>
         {
             TraceOptions o = options.Value;
             if (!o.Habilitado)
             {
                 return Results.NotFound();
             }
-            if (!string.IsNullOrWhiteSpace(o.Token))
+            if (!string.IsNullOrWhiteSpace(o.Token) && !executors.Value.Accepts(request))
             {
                 string? given = request.Headers["X-Trazas-Token"].FirstOrDefault()
                     ?? request.Headers.Authorization.FirstOrDefault()?.Replace("Bearer ", "", StringComparison.OrdinalIgnoreCase);

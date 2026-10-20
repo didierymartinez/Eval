@@ -145,7 +145,7 @@ label { display: block; font-weight: 600; margin-bottom: 4px; font-size: 14px; }
 .help { color: var(--muted); font-size: 13px; margin-top: 4px; }
 .help code, p code, td code { font-family: var(--mono); background: var(--surface-2); padding: 1px 5px; border-radius: 4px; font-size: 12.5px; }
 
-input[type=text], input[type=url], input[type=number], input[type=search], select, textarea {
+input[type=text], input[type=url], input[type=number], input[type=search], input[type=password], select, textarea {
   font: inherit;
   width: 100%;
   padding: 8px 10px;
@@ -273,6 +273,7 @@ pre {
   main { padding: 20px 16px 48px; }
   .grid-2, .grid-3 { grid-template-columns: 1fr; }
   .cell-clip { max-width: 150px; }
+  .sidebar a.nav-secondary { margin-top: 0; }
 }
 
 .chips.nowrap { flex-wrap: nowrap; }
@@ -280,3 +281,5 @@ button.link.danger { color: var(--bad); }
 
 .template.selected { border-color: var(--accent); background: var(--accent-soft); box-shadow: inset 0 0 0 1px var(--accent); }
 .template.selected strong { color: var(--accent); }
+
+.sidebar a.nav-secondary { margin-top: 14px; }

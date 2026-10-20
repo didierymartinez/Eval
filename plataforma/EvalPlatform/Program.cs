@@ -5,6 +5,7 @@ using EvalPlatform.Data;
 using EvalPlatform.Services;
 using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
 
 // Modo ejecutor: corre dentro de otra red y le lleva los casos al agente (ver ExecutorWorker).
@@ -16,10 +17,17 @@ if (args.Length > 0 && args[0] == "ejecutor")
 
 var builder = WebApplication.CreateBuilder(args);
 
-string connectionString = builder.Configuration.GetConnectionString("Eval") ?? "Data Source=datos/eval.db";
-EnsureSqliteFolder(connectionString, builder.Environment.ContentRootPath);
+// La ruta relativa de la base se toma desde la carpeta de la aplicación, no desde el directorio de trabajo.
+(string connectionString, string dataFolder) = ResolveSqlite(builder.Configuration.GetConnectionString("Eval") ?? "Data Source=datos/eval.db", builder.Environment.ContentRootPath);
 
 builder.Services.AddDbContextFactory<EvalDbContext>(o => o.UseSqlite(connectionString));
+
+// Llaves para cifrar las claves de los jueces de equipo: junto a la base, en el mismo volumen.
+builder.Services.AddDataProtection()
+    .SetApplicationName("EvalPlatform")
+    .PersistKeysToFileSystem(new DirectoryInfo(Path.Combine(dataFolder, "claves")));
+builder.Services.Configure<LimitOptions>(builder.Configuration.GetSection("Limites"));
+builder.Services.Configure<PlatformOptions>(builder.Configuration.GetSection("Plataforma"));
 builder.Services.Configure<JudgeOptions>(builder.Configuration.GetSection("Juez"));
 builder.Services.Configure<RunnerOptions>(builder.Configuration.GetSection("Corridas"));
 builder.Services.Configure<ExecutorOptions>(builder.Configuration.GetSection("Ejecutores"));
@@ -29,6 +37,10 @@ builder.Services.Configure<TraceOptions>(builder.Configuration.GetSection("Traza
 builder.Services.AddHttpClient(AgentInvoker.HttpClientName, c => c.Timeout = Timeout.InfiniteTimeSpan);
 
 builder.Services.AddSingleton<IJudgeProvider, OpenAiCompatibleJudgeProvider>();
+builder.Services.AddSingleton<IJudgeClientFactory, OpenAiJudgeClientFactory>();
+builder.Services.AddSingleton<JudgeSecrets>();
+builder.Services.AddSingleton<JudgeResolver>();
+builder.Services.AddSingleton<JudgeBudget>();
 builder.Services.AddSingleton<AgentInvoker>();
 builder.Services.AddSingleton<IAgentModelFactory, OpenAiCompatibleModelFactory>();
 builder.Services.AddSingleton<McpInvoker>();
@@ -94,15 +106,19 @@ if (demo)
 
 app.Run();
 
-static void EnsureSqliteFolder(string connectionString, string contentRoot)
+// Devuelve la cadena con la ruta absoluta de la base (y crea su carpeta) y la carpeta de datos.
+static (string ConnectionString, string DataFolder) ResolveSqlite(string connectionString, string contentRoot)
 {
     var builder = new Microsoft.Data.Sqlite.SqliteConnectionStringBuilder(connectionString);
     if (string.IsNullOrEmpty(builder.DataSource) || builder.DataSource == ":memory:")
     {
-        return;
+        return (connectionString, Path.Combine(contentRoot, "datos"));
     }
-    string path = Path.IsPathRooted(builder.DataSource) ? builder.DataSource : Path.Combine(contentRoot, builder.DataSource);
-    Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+    string path = Path.IsPathRooted(builder.DataSource) ? builder.DataSource : Path.GetFullPath(Path.Combine(contentRoot, builder.DataSource));
+    string folder = Path.GetDirectoryName(path)!;
+    Directory.CreateDirectory(folder);
+    builder.DataSource = path;
+    return (builder.ToString(), folder);
 }
 
 public partial class Program;

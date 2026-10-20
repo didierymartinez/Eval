@@ -21,14 +21,14 @@ public interface IAgentModelFactory
     IChatClient? Create(McpSettings mcp);
 }
 
-public sealed class OpenAiCompatibleModelFactory(IJudgeProvider judge) : IAgentModelFactory
+public sealed class OpenAiCompatibleModelFactory(IJudgeProvider judge, Microsoft.Extensions.Options.IOptions<JudgeOptions> judgeOptions) : IAgentModelFactory
 {
     public IChatClient? Create(McpSettings mcp)
     {
         if (string.IsNullOrWhiteSpace(mcp.ModelName))
         {
-            // Sin modelo propio se usa el del juez IA.
-            return judge.Get()?.ChatClient;
+            // Sin modelo propio se usa el del juez IA, si el servidor lo permite.
+            return judgeOptions.Value.PermitirEnEvaluaciones ? judge.Get()?.ChatClient : null;
         }
 
         var options = new OpenAIClientOptions();
@@ -153,7 +153,7 @@ public sealed class McpInvoker(IHttpClientFactory httpFactory, IAgentModelFactor
         });
         if (model is null)
         {
-            return new AgentInvocation { Error = "No hay modelo: configura uno en el agente o el juez IA del servidor." };
+            return new AgentInvocation { Error = "No hay modelo: configura uno en el agente (sin modelo se usa el juez IA del servidor, si está configurado y el servidor lo permite)." };
         }
 
         IList<McpClientTool> tools = await client.ListToolsAsync(cancellationToken: ct);

@@ -17,6 +17,13 @@ Sirve para dos preguntas:
 
 Es una **plataforma** (servidor web con su base de datos) con **ejecutores** que se despliegan junto a los agentes que no puede alcanzar. Todavía falta una **CLI** para CI, que será un cliente de la misma API. No se instala nada de evaluación dentro de los proyectos.
 
+Para un servicio compartido:
+- **Jueces por equipo:** cada equipo usa su propio juez IA (endpoint, modelo y clave cifrada) con un límite de tokens por mes, y el servidor puede prohibir el suyo. Así los tokens no corren por cuenta de quien administra el servidor.
+- **Redes sin salida:**
+  - los ejecutores solo necesitan un camino saliente hacia la plataforma, y reenvían también las trazas de los agentes de su red;
+  - en una red totalmente aislada, la plataforma va adentro y los resultados se llevan con **Exportar / Importar**.
+- **Producción con Docker Compose:** [`plataforma/docker-compose.yml`](plataforma/docker-compose.yml). Actualizar es cambiar la imagen; los datos quedan en un volumen.
+
 Si el agente vive en una red privada o no se expone por HTTP, un **ejecutor** dentro de esa red lleva los casos al agente. El ejecutor puede ser el de la plataforma o unas líneas de código en la tecnología del equipo. Solo hace conexiones salientes.
 
 ```bash
