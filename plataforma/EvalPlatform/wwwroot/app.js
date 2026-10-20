@@ -141,7 +141,7 @@ async function pageHome() {
       h('p', null, text),
       h('div', null, h('a', { class: 'button', href }, button)));
 
-  const demo = evaluations.find((e) => e.name.startsWith('Demo'));
+  const demo = evaluations.filter((e) => e.name.startsWith('Demo')).sort((x, y) => x.id - y.id)[0];
   render(
     pageHead('Evaluaciones de agentes', 'Comprueba con casos reales si tu agente o tu prompt responde lo que esperas.'),
     demo && !demo.lastRun
@@ -178,35 +178,66 @@ async function pageAgents() {
   render(
     pageHead('Agentes', 'Dónde está cada agente o prompt que quieres evaluar.', h('a', { class: 'button primary', href: '#/agentes/nuevo' }, '+ Nuevo agente')),
     h('div', { class: 'table-wrap' }, h('table', null,
-      h('thead', null, h('tr', null, h('th', null, 'Nombre'), h('th', null, 'URL'), h('th', null, 'Respuesta en'))),
+      h('thead', null, h('tr', null, h('th', null, 'Nombre'), h('th', null, 'Tipo'), h('th', null, 'URL'))),
       h('tbody', null, agents.length ? agents.map((a) =>
         h('tr', { class: 'clickable', onclick: () => go(`#/agentes/${a.id}`) },
           h('td', null, h('strong', null, a.name)),
-          h('td', { class: 'mono cell-clip' }, `${a.method} ${a.url}`),
-          h('td', { class: 'mono' }, a.responsePath || '(todo el cuerpo)'))) : emptyRow(3, 'Aún no hay agentes. Crea el primero.')))));
+          h('td', null, h('span', { class: `badge ${a.kind && a.kind !== 'http' ? 'info' : 'skip'}` }, kindLabel(a.kind))),
+          h('td', { class: 'mono cell-clip' }, a.kind && a.kind !== 'http' ? a.url : `${a.method} ${a.url}`))) : emptyRow(3, 'Aún no hay agentes. Crea el primero.')))));
+}
+
+const AGENT_KINDS = [
+  ['http', 'Agente o API por HTTP', 'Webhook de n8n, endpoint propio en C# u otro, o la API de un modelo.'],
+  ['mcp', 'Servidor MCP: llamar herramientas', 'Llama una herramienta del MCP con los argumentos de cada caso y compara el resultado.'],
+  ['mcp_modelo', 'Servidor MCP con un modelo', 'Un modelo recibe las herramientas del MCP: evalúa si elige la correcta y con qué argumentos.'],
+];
+const kindLabel = (kind) => (AGENT_KINDS.find((k) => k[0] === (kind || 'http')) || AGENT_KINDS[0])[1];
+const toolCallText = (t) => (t.arguments ? `${t.name}(${t.arguments})` : t.name);
+
+function mcpToolsTable(tools) {
+  return h('div', { class: 'table-wrap', style: { marginTop: '10px' } }, h('table', null,
+    h('thead', null, h('tr', null, h('th', null, 'Herramienta'), h('th', null, 'Descripción'), h('th', null, 'Parámetros'))),
+    h('tbody', null, tools.length ? tools.map((t) => {
+      const props = t.inputSchema?.properties || {};
+      const required = new Set(t.inputSchema?.required || []);
+      return h('tr', null,
+        h('td', { class: 'mono' }, t.name),
+        h('td', null, t.description || h('span', { class: 'muted' }, 'sin descripción')),
+        h('td', { class: 'small' }, Object.keys(props).length ? Object.entries(props).map(([k, v]) =>
+          h('div', null, h('code', null, k), required.has(k) ? ' *' : '', v.type ? h('span', { class: 'muted' }, ` ${v.type}`) : null, v.description ? ` — ${v.description}` : null))
+          : h('span', { class: 'muted' }, 'ninguno')));
+    }) : emptyRow(3, 'El servidor no expone herramientas.'))));
 }
 
 async function pageAgentForm(id) {
   const templates = id ? [] : await api('/plantillas-agente');
   const a = id ? await api(`/agentes/${id}`) : {
-    name: '', url: '', method: 'POST', headers: {}, bodyTemplate: '{ "input": "{{input}}" }',
-    responsePath: 'output', contextPath: '', toolsPath: '', tokensPath: '', timeoutSeconds: 120,
+    kind: 'http', name: '', url: '', method: 'POST', headers: {}, bodyTemplate: '{ "input": "{{input}}" }',
+    responsePath: 'output', contextPath: '', toolsPath: '', toolArgumentsPath: '', tokensPath: '', timeoutSeconds: 120,
+    mcp: { toolTemplate: '{{herramienta}}', argumentsTemplate: '{{argumentos}}' },
   };
+  a.kind = a.kind || 'http';
+  a.mcp = { toolTemplate: '{{herramienta}}', argumentsTemplate: '{{argumentos}}', ...(a.mcp || {}) };
   let headers = Object.entries(a.headers || {});
   let testInput = '';
   const testResult = h('div');
+  const toolsResult = h('div');
 
   const collect = () => ({
-    name: a.name, url: a.url, method: a.method,
+    kind: a.kind, name: a.name, url: a.url, method: a.method,
     headers: Object.fromEntries(headers.filter(([k]) => k.trim())),
     bodyTemplate: a.bodyTemplate, responsePath: a.responsePath, contextPath: a.contextPath, toolsPath: a.toolsPath,
-    tokensPath: a.tokensPath, timeoutSeconds: Number(a.timeoutSeconds) || 120,
+    toolArgumentsPath: a.toolArgumentsPath, tokensPath: a.tokensPath, timeoutSeconds: Number(a.timeoutSeconds) || 120,
+    mcp: { ...a.mcp, temperature: a.mcp.temperature === '' || a.mcp.temperature == null ? null : Number(a.mcp.temperature) },
   });
 
-  const bind = (key, attrs = {}) => h(attrs.multiline ? 'textarea' : 'input', {
-    type: attrs.multiline ? null : 'text', value: a[key] ?? '', placeholder: attrs.placeholder,
-    rows: attrs.rows, oninput: (e) => (a[key] = e.target.value),
+  const bindIn = (obj, key, attrs = {}) => h(attrs.multiline ? 'textarea' : 'input', {
+    type: attrs.multiline ? null : 'text', value: obj[key] ?? '', placeholder: attrs.placeholder,
+    rows: attrs.rows, style: attrs.prose ? { fontFamily: 'inherit', fontSize: '15px' } : null,
+    oninput: (e) => (obj[key] = e.target.value),
   });
+  const bind = (key, attrs) => bindIn(a, key, attrs);
+  const bindMcp = (key, attrs) => bindIn(a.mcp, key, attrs);
 
   const headersEditor = () => {
     const box = h('div');
@@ -220,23 +251,44 @@ async function pageAgentForm(id) {
     return box;
   };
 
+  const listTools = async () => {
+    replace(toolsResult, h('p', { class: 'muted' }, 'Conectando con el servidor MCP…'));
+    try {
+      const tools = await api('/agentes/herramientas', { method: 'POST', body: collect() });
+      replace(toolsResult, h('div', { class: 'notice ok' }, h('strong', null, `Conectó: ${tools.length} herramienta(s)`)), mcpToolsTable(tools));
+    } catch (e) {
+      replace(toolsResult, h('div', { class: 'notice bad' }, e.message));
+    }
+  };
+
   const runTest = async () => {
+    if (a.kind === 'mcp' && /\{\{\s*(herramienta|argumentos)\s*\}\}/.test(`${a.mcp.toolTemplate}${a.mcp.argumentsTemplate}`)) {
+      replace(testResult, h('div', { class: 'notice warn' }, 'La herramienta o los argumentos vienen de columnas de los casos ({{herramienta}}, {{argumentos}}), que aquí no existen. Para probar, pon temporalmente un nombre y argumentos fijos (puedes usar {{input}} con la entrada de ejemplo).'));
+      return;
+    }
     replace(testResult, h('p', { class: 'muted' }, 'Llamando al agente…'));
     try {
       const r = await api('/agentes/probar', { method: 'POST', body: { agent: collect(), input: testInput } });
+      const showContext = a.kind === 'mcp_modelo' || (a.kind === 'http' && a.contextPath);
+      const showTools = a.kind !== 'http' || a.toolsPath;
       replace(testResult,
         h('div', { class: `notice ${r.ok ? 'ok' : 'bad'}` },
           h('strong', null, r.ok ? `Conectó en ${r.latencyMs} ms` : 'No funcionó'),
           r.error ? h('div', null, r.error) : null),
         r.ok ? h('div', null,
           h('h3', null, 'Respuesta que se va a evaluar'),
-          r.output ? h('div', { class: 'text-block' }, r.output) : h('div', { class: 'notice warn' }, 'La ruta de la respuesta no encontró nada. Revisa "Dónde viene la respuesta" con el JSON completo de abajo.'),
-          a.contextPath ? h('p', null, h('strong', null, `Documentos recuperados: ${r.context.length}`), r.context.length ? null : h('span', { class: 'muted' }, ' (la ruta no encontró documentos)')) : null,
-          r.context.length ? h('details', null, h('summary', null, 'Ver documentos'), r.context.map((c) => h('pre', null, c))) : null,
-          a.toolsPath ? h('p', null, h('strong', null, 'Herramientas: '), r.tools.length ? r.tools.join(', ') : h('span', { class: 'muted' }, 'ninguna')) : null,
-          a.tokensPath ? h('p', null, h('strong', null, 'Tokens: '), r.tokens ?? h('span', { class: 'muted' }, 'la ruta no encontró tokens')) : null) : null,
-        h('details', null, h('summary', null, 'Lo que se envió'), h('pre', null, r.requestBody || '(sin cuerpo)')),
-        r.raw ? h('details', { open: !r.ok || !r.output }, h('summary', null, 'Respuesta completa del agente'), h('pre', null, pretty(r.raw))) : null);
+          r.output ? h('div', { class: 'text-block' }, r.output) : h('div', { class: 'notice warn' }, a.kind === 'http'
+            ? 'La ruta de la respuesta no encontró nada. Revisa "Dónde viene la respuesta" con el JSON completo de abajo.'
+            : 'La respuesta vino vacía.'),
+          showTools ? h('p', null, h('strong', null, 'Herramientas: '), r.toolCalls.length
+            ? h('span', { class: 'mono' }, r.toolCalls.map(toolCallText).join('  →  '))
+            : h('span', { class: 'muted' }, 'ninguna')) : null,
+          showContext ? h('p', null, h('strong', null, a.kind === 'mcp_modelo' ? `Resultados de herramientas: ${r.context.length}` : `Documentos recuperados: ${r.context.length}`),
+            r.context.length || a.kind !== 'http' ? null : h('span', { class: 'muted' }, ' (la ruta no encontró documentos)')) : null,
+          r.context.length ? h('details', null, h('summary', null, 'Ver'), r.context.map((c) => h('pre', null, c))) : null,
+          r.tokens != null || (a.kind === 'http' && a.tokensPath) ? h('p', null, h('strong', null, 'Tokens: '), r.tokens ?? h('span', { class: 'muted' }, 'la ruta no encontró tokens')) : null) : null,
+        h('details', null, h('summary', null, 'Lo que se envió'), h('pre', null, pretty(r.requestBody || '') || '(sin cuerpo)')),
+        r.raw ? h('details', { open: !r.ok || !r.output }, h('summary', null, 'Respuesta completa'), h('pre', null, pretty(r.raw))) : null);
     } catch (e) {
       replace(testResult, h('div', { class: 'notice bad' }, e.message));
     }
@@ -255,7 +307,9 @@ async function pageAgentForm(id) {
     }
   };
 
-  const form = () => h('div', null,
+  const envHelp = h('span', null, 'Para claves o tokens usa ', h('code', null, '{{env:NOMBRE}}'), ': se lee de una variable de entorno del servidor y no queda guardado aquí.');
+
+  const httpCards = () => [
     h('div', { class: 'card' },
       field('Nombre', bind('name', { placeholder: 'Ej. Agente de helpdesk (producción)' })),
       h('div', { class: 'grid-3' },
@@ -263,7 +317,7 @@ async function pageAgentForm(id) {
         field('Método', h('select', { onchange: (e) => (a.method = e.target.value) },
           ['POST', 'GET', 'PUT', 'PATCH'].map((m) => h('option', { value: m, selected: a.method === m }, m)))),
         field('Tiempo máximo (seg.)', h('input', { type: 'number', min: 1, max: 1800, value: a.timeoutSeconds, oninput: (e) => (a.timeoutSeconds = e.target.value) }))),
-      field('Encabezados', headersEditor(), h('span', null, 'Para claves o tokens usa ', h('code', null, '{{env:NOMBRE}}'), ': se lee de una variable de entorno del servidor y no queda guardado aquí.')),
+      field('Encabezados', headersEditor(), envHelp),
       field('Cuerpo (JSON)', bind('bodyTemplate', { multiline: true, rows: 6 }),
         h('span', null, h('code', null, '{{input}}'), ' se reemplaza por la entrada de cada caso y ', h('code', null, '{{nombre_columna}}'), ' por cualquier otra columna de tus casos.'))),
     h('div', { class: 'card' },
@@ -272,14 +326,59 @@ async function pageAgentForm(id) {
       field('Dónde viene la respuesta', bind('responsePath', { placeholder: 'output (vacío = toda la respuesta)' })),
       h('div', { class: 'grid-2' },
         field('Dónde vienen los documentos recuperados (opcional, RAG)', bind('contextPath', { placeholder: 'intermediateSteps[*].observation' }), 'Necesario para las comparaciones de base de conocimiento.'),
-        field('Dónde vienen las herramientas usadas (opcional)', bind('toolsPath', { placeholder: 'intermediateSteps[*].action.tool' }), 'Necesario para "Usó las herramientas".')),
-      field('Dónde vienen los tokens consumidos (opcional)', bind('tokensPath', { placeholder: 'usage.total_tokens' }),
-        'Varias rutas separadas por coma se suman (ej. usage.input_tokens, usage.output_tokens). El webhook de n8n no los devuelve por defecto.')),
+        field('Dónde vienen los tokens consumidos (opcional)', bind('tokensPath', { placeholder: 'usage.total_tokens' }),
+          'Varias rutas separadas por coma se suman. El webhook de n8n no los devuelve por defecto.')),
+      h('div', { class: 'grid-2' },
+        field('Dónde vienen las herramientas usadas (opcional)', bind('toolsPath', { placeholder: 'intermediateSteps[*].action.tool' }), 'Necesario para "Usó las herramientas".'),
+        field('Dónde vienen sus argumentos (opcional)', bind('toolArgumentsPath', { placeholder: 'intermediateSteps[*].action.toolInput' }), 'En el mismo orden que las herramientas. Necesario para "Llamó con estos argumentos".'))),
+  ];
+
+  const mcpCommon = () => h('div', { class: 'card' },
+    field('Nombre', bind('name', { placeholder: 'Ej. MCP de cartera (pruebas)' })),
+    h('div', { class: 'grid-2' },
+      field('URL del servidor MCP', bind('url', { placeholder: 'https://tu-servidor/mcp' }), 'Transporte HTTP (Streamable HTTP o SSE). Los servidores stdio no están soportados.'),
+      field('Tiempo máximo (seg.)', h('input', { type: 'number', min: 1, max: 1800, value: a.timeoutSeconds, oninput: (e) => (a.timeoutSeconds = e.target.value) }))),
+    field('Encabezados (autenticación)', headersEditor(), envHelp),
+    h('button', { type: 'button', onclick: listTools }, 'Ver herramientas del servidor'),
+    toolsResult);
+
+  const mcpDirectCard = () => h('div', { class: 'card' },
+    h('h3', null, 'Qué herramienta llamar en cada caso'),
+    h('div', { class: 'grid-2' },
+      field('Herramienta', bindMcp('toolTemplate', { placeholder: '{{herramienta}}' }),
+        h('span', null, 'Un nombre fijo (', h('code', null, 'consultar_cartera'), ') o una columna de tus casos (', h('code', null, '{{herramienta}}'), ').')),
+      field('Argumentos (JSON)', bindMcp('argumentsTemplate', { multiline: true, rows: 3, placeholder: '{{argumentos}}' }),
+        h('span', null, h('code', null, '{{argumentos}}'), ' toma el JSON de esa columna. También puedes armarlo: ', h('code', null, '{ "cliente": "{{cliente}}" }'), '.'))),
+    h('p', { class: 'muted small' }, 'Lo que devuelve la herramienta es la respuesta a evaluar. Para revisar si debía fallar, compara ', h('code', null, 'isError'), ' con "Es igual a" (opción "Comparar otro campo de la respuesta"). ',
+      h('code', null, 'structuredContent.campo'), ' compara un campo del resultado estructurado.'));
+
+  const mcpModelCard = () => h('div', { class: 'card' },
+    h('h3', null, 'Modelo que usa las herramientas'),
+    h('p', { class: 'muted small' }, 'El modelo recibe la entrada de cada caso y las herramientas del MCP (nombres, descripciones y parámetros). Así se ve si tus descripciones le alcanzan para elegir bien. Cualquier API compatible con OpenAI.'),
+    h('div', { class: 'grid-3' },
+      field('Modelo', bindMcp('modelName', { placeholder: 'Vacío = el mismo del juez IA' })),
+      field('URL de la API', bindMcp('modelEndpoint', { placeholder: 'https://api.openai.com/v1/' })),
+      field('Temperatura', h('input', { type: 'number', step: '0.1', min: 0, max: 2, value: a.mcp.temperature ?? '', placeholder: 'por defecto', oninput: (e) => (a.mcp.temperature = e.target.value) }))),
+    field('Clave de la API', bindMcp('modelApiKey', { placeholder: '{{env:OPENAI_API_KEY}}' }), envHelp),
+    field('Prompt de sistema', bindMcp('systemPrompt', { multiline: true, rows: 3, prose: true, placeholder: 'Ej. Eres el asistente de cartera. Usa las herramientas para consultar datos; no inventes cifras.' })),
+    field('Herramientas que se ofrecen (opcional)', bindMcp('allowedTools', { placeholder: 'consultar_cartera, buscar_cliente' }), 'Separadas por coma. Vacío = todas las del servidor.'));
+
+  const testCard = () => h('div', { class: 'card' },
+    h('h3', null, 'Probar'),
+    field(a.kind === 'mcp' ? 'Entrada de ejemplo (se usa si la herramienta o los argumentos tienen {{input}})' : 'Escribe una entrada de ejemplo',
+      h('textarea', { rows: 2, style: { fontFamily: 'inherit', fontSize: '15px', minHeight: '0' }, placeholder: a.kind === 'http' ? 'Ej. No puedo entrar, me dice que mi usuario está bloqueado' : 'Ej. ¿Cuánto debe el cliente 123?', oninput: (e) => (testInput = e.target.value) })),
+    h('button', { type: 'button', onclick: runTest }, 'Probar'),
+    testResult);
+
+  const form = () => h('div', null,
     h('div', { class: 'card' },
-      h('h3', null, 'Probar la conexión'),
-      field('Escribe una entrada de ejemplo', h('textarea', { rows: 2, style: { fontFamily: 'inherit', fontSize: '15px', minHeight: '0' }, placeholder: 'Ej. No puedo entrar, me dice que mi usuario está bloqueado', oninput: (e) => (testInput = e.target.value) })),
-      h('button', { type: 'button', onclick: runTest }, 'Probar'),
-      testResult),
+      h('label', null, 'Tipo'),
+      h('div', { class: 'templates' }, AGENT_KINDS.map(([kind, label, desc]) => h('button', {
+        type: 'button', class: `template${a.kind === kind ? ' selected' : ''}`, 'aria-pressed': a.kind === kind ? 'true' : 'false',
+        onclick: () => { a.kind = kind; draw(); },
+      }, h('strong', null, label), h('span', null, desc))))),
+    a.kind === 'http' ? httpCards() : [mcpCommon(), a.kind === 'mcp' ? mcpDirectCard() : mcpModelCard()],
+    testCard(),
     h('div', { class: 'actions' },
       h('button', { class: 'primary', onclick: save }, 'Guardar agente'),
       h('a', { class: 'button', href: '#/agentes' }, 'Volver'),
@@ -296,7 +395,12 @@ async function pageAgentForm(id) {
       h('div', { class: 'templates' }, templates.map((t) => h('button', {
         class: 'template', type: 'button',
         onclick: () => {
-          Object.assign(a, { ...t.agent, contextPath: t.agent.contextPath || '', toolsPath: t.agent.toolsPath || '', tokensPath: t.agent.tokensPath || '' });
+          Object.assign(a, {
+            ...t.agent,
+            kind: t.agent.kind || 'http', method: t.agent.method || 'POST', bodyTemplate: t.agent.bodyTemplate || '',
+            contextPath: t.agent.contextPath || '', toolsPath: t.agent.toolsPath || '', toolArgumentsPath: t.agent.toolArgumentsPath || '', tokensPath: t.agent.tokensPath || '',
+            mcp: { toolTemplate: '{{herramienta}}', argumentsTemplate: '{{argumentos}}', ...(t.agent.mcp || {}) },
+          });
           headers = Object.entries(t.agent.headers || {});
           draw();
           toast(`Plantilla "${t.name}" aplicada: ajusta la URL`);
@@ -363,6 +467,20 @@ function pageDatasetNew() {
       const tools = area('Una por línea. Ej.:\nbuscar_base_conocimiento\ncrear_ticket\nenviar_correo', 3);
       const knowledge = area('Opcional: pega preguntas frecuentes, políticas o partes del manual para que los casos usen datos reales.', 5);
       const count = h('input', { type: 'number', min: 3, max: 50, value: 20 });
+      const mcpPicker = h('select', null, h('option', { value: '' }, '— Traer las herramientas de un servidor MCP —'));
+      api('/agentes').then((agents) => agents.filter((x) => x.kind && x.kind !== 'http').forEach((x) => mcpPicker.append(h('option', { value: x.id }, x.name))));
+      mcpPicker.onchange = async () => {
+        if (!mcpPicker.value) return;
+        try {
+          const agent = await api(`/agentes/${mcpPicker.value}`);
+          const list = await api('/agentes/herramientas', { method: 'POST', body: agent });
+          tools.value = list.map((t) => {
+            const params = Object.entries(t.inputSchema?.properties || {}).map(([k, v]) => `${k}${v.type ? `: ${v.type}` : ''}`).join(', ');
+            return `${t.name}(${params}) — ${t.description || ''}`;
+          }).join('\n');
+          toast(`Se trajeron ${list.length} herramientas`);
+        } catch (e) { toast(e.message, true); }
+      };
       const button = h('button', {
         class: 'primary',
         disabled: !catalog.estado.juezConfigurado,
@@ -387,7 +505,7 @@ function pageDatasetNew() {
         field('Nombre', name),
         field('Qué hace el agente', description),
         h('div', { class: 'grid-2' },
-          field('Herramientas que puede usar', tools),
+          field('Herramientas que puede usar', h('div', null, tools, h('div', { style: { marginTop: '6px' } }, mcpPicker))),
           field('Cantidad de casos', count, 'Entre 3 y 50.')),
         field('Información que tiene disponible', knowledge),
         button);
@@ -553,7 +671,10 @@ function suggestChecks(columns) {
   add('contiene', find(/debe_contener|must_contain|contiene/i));
   add('no_contiene', find(/no_debe|must_not|prohibid/i));
   add('rubrica', find(/criterio|rubric|rubrica|rúbrica/i));
-  add('herramientas', find(/herramienta|tools/i));
+  add('herramientas', find(/^(herramientas_esperadas|herramientas|expected_tools|tools)$/i));
+  add('argumentos', find(/argumentos_esperados|expected_arguments|expected_args/i));
+  const errorColumn = find(/^(es_error|debe_fallar|expected_error)$/i);
+  if (errorColumn) out.push({ type: 'igual', label: '¿Debía dar error?', expectedColumn: errorColumn, responsePath: 'isError', blocking: true });
   add('igual', find(/^(categoria_esperada|clase|etiqueta|label|decision|debe_responder)$/i));
   return out;
 }
@@ -574,7 +695,7 @@ async function pageEvaluationForm(id) {
   }
 
   const columnsOf = () => datasets.find((d) => d.id === Number(e.datasetId))?.columns || [];
-  const guessInput = (cols) => cols.find((c) => /^(input|entrada|pregunta|ticket|mensaje|prompt)$/i.test(c)) || cols[0] || '';
+  const guessInput = (cols) => cols.find((c) => /^(input|entrada|pregunta|ticket|mensaje|prompt|caso)$/i.test(c)) || cols[0] || '';
   if (!e.inputColumn) e.inputColumn = guessInput(columnsOf());
   if (!id && !e.checks.length) e.checks = suggestChecks(columnsOf());
 
@@ -811,7 +932,12 @@ function caseDetail(r) {
           h('div', null, c.reason),
           c.expected ? h('div', { class: 'small muted' }, 'Esperado: ', c.expected) : null))))) : null,
     r.context.length ? h('details', null, h('summary', null, `Documentos recuperados (${r.context.length})`), r.context.map((c) => h('pre', null, c))) : null,
-    r.tools.length ? h('p', null, h('strong', null, 'Herramientas usadas: '), r.tools.join(' → ')) : null,
+    (r.toolCalls || []).length
+      ? h('div', { style: { marginTop: '10px' } }, h('strong', null, 'Herramientas usadas'),
+          h('ol', { style: { margin: '4px 0 0', paddingLeft: '22px' } }, r.toolCalls.map((t) => h('li', null,
+            h('span', { class: 'mono' }, toolCallText(t)),
+            t.result ? h('details', { style: { marginTop: '2px' } }, h('summary', { class: 'small' }, 'resultado'), h('pre', null, t.result)) : null))))
+      : r.tools.length ? h('p', null, h('strong', null, 'Herramientas usadas: '), r.tools.join(' → ')) : null,
     r.tokens != null ? h('p', null, h('strong', null, 'Tokens: '), r.tokens.toLocaleString('es')) : null,
     h('details', null, h('summary', null, 'Datos del caso'),
       h('table', { style: { marginTop: '6px' } }, h('tbody', null, Object.entries(r.row).map(([k, v]) => h('tr', null, h('th', { style: { width: '220px' } }, k), h('td', null, v)))))),

@@ -1,11 +1,44 @@
 namespace EvalPlatform.Domain;
 
-// Dónde está el agente y cómo hablarle. Cualquier cosa que responda por HTTP:
-// un webhook de n8n, un endpoint de C#, la API de un modelo, etc.
+public static class AgentKinds
+{
+    // Cualquier cosa que responda por HTTP: webhook de n8n, endpoint propio, API de un modelo.
+    public const string Http = "http";
+
+    // Servidor MCP: se llama una herramienta (tools/call) con los argumentos de cada caso.
+    public const string McpDirect = "mcp";
+
+    // Servidor MCP con un modelo: el modelo recibe las herramientas del MCP y decide cuál usar.
+    public const string McpModel = "mcp_modelo";
+
+    public static bool IsMcp(string? kind) => kind is McpDirect or McpModel;
+}
+
+// Configuración de los agentes MCP.
+public sealed class McpSettings
+{
+    // Llamada directa: nombre de la herramienta y argumentos (JSON). Admiten {{columna}}.
+    public string ToolTemplate { get; set; } = "{{herramienta}}";
+    public string ArgumentsTemplate { get; set; } = "{{argumentos}}";
+
+    // Con modelo: API compatible con OpenAI. Sin modelo se usa el mismo del juez IA.
+    public string? ModelEndpoint { get; set; }
+    public string? ModelName { get; set; }
+    public string? ModelApiKey { get; set; }
+    public string? SystemPrompt { get; set; }
+    public float? Temperature { get; set; }
+
+    // Herramientas que se le ofrecen al modelo, separadas por coma. Vacío = todas.
+    public string? AllowedTools { get; set; }
+}
+
+// Dónde está el agente y cómo hablarle.
 public sealed class Agent
 {
     public int Id { get; set; }
     public string Name { get; set; } = "";
+    public string Kind { get; set; } = AgentKinds.Http;
+    public McpSettings Mcp { get; set; } = new();
     public string Url { get; set; } = "";
     public string Method { get; set; } = "POST";
 
@@ -20,11 +53,30 @@ public sealed class Agent
     public string? ContextPath { get; set; }
     public string? ToolsPath { get; set; }
 
+    // Argumentos de cada herramienta, en el mismo orden que ToolsPath (p. ej. "toolCalls[*].arguments").
+    public string? ToolArgumentsPath { get; set; }
+
     // Tokens consumidos; varias rutas separadas por coma se suman (p. ej. "usage.input_tokens, usage.output_tokens").
     public string? TokensPath { get; set; }
 
     public int TimeoutSeconds { get; set; } = 120;
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
+
+    // Qué datos puede entregar este agente para las comparaciones.
+    public bool ProvidesTools => AgentKinds.IsMcp(Kind) || !string.IsNullOrWhiteSpace(ToolsPath);
+    public bool ProvidesToolArguments => AgentKinds.IsMcp(Kind) || !string.IsNullOrWhiteSpace(ToolArgumentsPath);
+    public bool ProvidesContext => Kind == AgentKinds.McpModel || (Kind == AgentKinds.Http && !string.IsNullOrWhiteSpace(ContextPath));
+    public bool ProvidesTokens => Kind == AgentKinds.McpModel || (Kind == AgentKinds.Http && !string.IsNullOrWhiteSpace(TokensPath));
+}
+
+// Una llamada a herramienta: nombre y argumentos en JSON.
+public sealed class ToolCallRecord
+{
+    public string Name { get; set; } = "";
+    public string? Arguments { get; set; }
+    public string? Result { get; set; }
+
+    public override string ToString() => string.IsNullOrEmpty(Arguments) ? Name : $"{Name}({Arguments})";
 }
 
 // Los casos de prueba: una tabla con columnas libres (entrada, esperado, etc.).
@@ -118,6 +170,7 @@ public sealed class RunResult
     public string? Output { get; set; }
     public List<string> Context { get; set; } = [];
     public List<string> Tools { get; set; } = [];
+    public List<ToolCallRecord> ToolCalls { get; set; } = [];
     public string? RawResponse { get; set; }
     public int? HttpStatus { get; set; }
     public long LatencyMs { get; set; }

@@ -276,3 +276,6 @@ pre {
 
 .chips.nowrap { flex-wrap: nowrap; }
 button.link.danger { color: var(--bad); }
+
+.template.selected { border-color: var(--accent); background: var(--accent-soft); box-shadow: inset 0 0 0 1px var(--accent); }
+.template.selected strong { color: var(--accent); }

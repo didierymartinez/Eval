@@ -52,7 +52,7 @@ public sealed class RunQueue
 // Corre una evaluación: cada caso (y cada repetición) va al agente y pasa por las comparaciones.
 public sealed class RunExecutor(
     IDbContextFactory<EvalDbContext> dbFactory,
-    AgentInvoker invoker,
+    AgentDispatcher invoker,
     CheckRunner checks,
     IOptions<RunnerOptions> options,
     ILogger<RunExecutor> logger)
@@ -168,6 +168,7 @@ public sealed class RunExecutor(
             Output = invocation.Output,
             Context = invocation.Context,
             Tools = invocation.Tools,
+            ToolCalls = invocation.ToolCalls,
             RawResponse = invocation.RawResponse,
             HttpStatus = invocation.HttpStatus,
             LatencyMs = invocation.LatencyMs,

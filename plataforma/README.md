@@ -2,7 +2,7 @@
 
 Aplicación web para comprobar, con casos reales, si un agente o un prompt responde lo que se espera. Funciona como las evaluaciones de n8n, pero con cualquier agente que responda por HTTP:
 
-1. **Agente**: dónde está (URL) y cómo se le habla. Sirve un webhook de n8n, un endpoint propio en C# u otro lenguaje, o la API de un modelo (para evaluar un prompt directamente).
+1. **Agente**: dónde está (URL) y cómo se le habla. Sirve un webhook de n8n, un endpoint propio en C# u otro lenguaje, la API de un modelo (para evaluar un prompt directamente) o un **servidor MCP** por HTTP.
 2. **Casos de prueba**: un Excel, un CSV o un Google Sheet con la entrada de cada caso y lo que se espera.
 3. **Evaluación**: qué se compara en cada respuesta (que contenga algo, que sea correcta según un juez IA, que use los documentos del RAG, etc.).
 4. **Resultados**: qué casos pasaron, cuáles fallaron y por qué, comparación con la corrida anterior y descarga en Excel.
@@ -83,6 +83,8 @@ En **Agentes → Nuevo agente** hay plantillas para los casos comunes:
 | Prompt directo (API OpenAI) | `messages` con tu prompt de sistema | `choices[0].message.content` | — | `choices[0].message.tool_calls[*].function.name` |
 | Prompt directo (API Anthropic) | `system` + `messages` | `content[*].text` | — | `content[*].name` |
 
+Ruta de argumentos de herramientas en cada plantilla: `intermediateSteps[*].action.toolInput` (n8n), `toolCalls[*].arguments` (endpoint propio), `choices[0].message.tool_calls[*].function.arguments` (OpenAI) y `content[*].input` (Anthropic).
+
 Ruta de tokens en cada plantilla: `usage.inputTokens, usage.outputTokens` (endpoint propio), `usage.total_tokens` (OpenAI) y `usage.input_tokens, usage.output_tokens` (Anthropic); varias rutas separadas por coma se suman. El webhook de n8n no devuelve tokens a menos que el workflow los agregue a la respuesta.
 
 - **Marcadores:** `{{input}}` es la columna de entrada del caso; `{{cualquier_columna}}` trae otra columna; `{{env:NOMBRE}}` lee una variable de entorno del servidor, para no guardar claves en la base de datos.
@@ -99,6 +101,74 @@ En el workflow:
 4. Las ramas que hacen cosas reales (responder al cliente, crear tickets, enviar correos) no deberían correr durante una evaluación. La plantilla manda el encabezado `X-Eval: 1` para que un nodo **IF** las salte. Otra opción es un segundo webhook solo para evaluaciones.
 
 Más detalle del caso helpdesk con RAG en [`../docs/evaluar-rag-helpdesk.md`](../docs/evaluar-rag-helpdesk.md).
+
+## Servidores MCP
+
+Hay dos tipos de agente para evaluar un servidor MCP por HTTP (Streamable HTTP, o el transporte SSE anterior). Los servidores stdio no están soportados. En ambos, **Ver herramientas del servidor** muestra lo que expone: nombres, descripciones y parámetros.
+
+### 1. Llamar herramientas: ¿el servidor responde bien?
+
+La plataforma se conecta al MCP y, por cada caso, llama una herramienta (`tools/call`) con sus argumentos. Lo que devuelve la herramienta es la respuesta que se evalúa. Es lo mismo que hace el [proveedor MCP de promptfoo](https://www.promptfoo.dev/docs/providers/mcp/).
+
+- **Herramienta:** un nombre fijo, o `{{herramienta}}` para tomarlo de esa columna.
+- **Argumentos (JSON):** `{{argumentos}}` para tomar el JSON de esa columna, o armarlo con marcadores: `{ "cliente": "{{cliente}}" }`. Para números sin comillas: `{ "limite": {{limite}} }`.
+
+| caso | herramienta | argumentos | debe_contener | es_error |
+|---|---|---|---|---|
+| Saldo de un cliente existente | consultar_cartera | `{"cliente": "123"}` | 1.200.000 | no |
+| Cliente que no existe | consultar_cartera | `{"cliente": "999"}` | no existe | si |
+| Ticket sin asunto debe fallar | crear_ticket | `{"asunto": ""}` | obligatorio | si |
+
+Comparaciones útiles:
+- **Contiene** sobre el texto del resultado.
+- **Es igual a** con *Comparar otro campo de la respuesta* = `isError`, para revisar que falle cuando debe y no falle cuando no debe. La sugerencia automática lo arma si la columna se llama `es_error`.
+- **Es igual a** o **Contiene** sobre `structuredContent.campo`, si la herramienta devuelve resultado estructurado.
+- **Responde a tiempo.**
+
+Una herramienta que no existe o un error de protocolo cuentan como respuesta con `isError = true`, no como fallo de conexión. Así se pueden probar los casos de error.
+
+### 2. Con un modelo: ¿el modelo elige bien las herramientas?
+
+Un modelo recibe la entrada del caso y las herramientas del MCP, y decide cuáles llamar. Así se ve si los nombres, descripciones y parámetros de tus herramientas le alcanzan para elegir bien. La plataforma guarda cada llamada con sus argumentos y su resultado.
+
+- **Modelo:** cualquier API compatible con OpenAI (modelo, URL y clave con `{{env:...}}`). Si lo dejas vacío, usa el mismo modelo del juez IA.
+- **Prompt de sistema** y **herramientas que se ofrecen** (opcional, para probar con un subconjunto).
+
+| input | herramientas_esperadas | argumentos_esperados | respuesta_esperada |
+|---|---|---|---|
+| ¿Cuánto debe el cliente 123? | consultar_cartera | `consultar_cartera {"cliente": "123"}` | Debe $1.200.000… |
+| ¿Cuánto debe Constructora Andina? | buscar_cliente\|consultar_cartera | `consultar_cartera {"cliente": "123"}` | … |
+| Hola, ¿qué puedes hacer? | ninguna | | Explica qué puede hacer sin usar herramientas |
+
+Comparaciones útiles:
+- **Usó las herramientas** (`ninguna` = no debía usar ninguna) y **Usó las herramientas en orden**.
+- **Llamó con estos argumentos.**
+- **Correcta frente a lo esperado (IA)** sobre la respuesta final.
+- **Respaldada por los documentos (RAG):** los resultados de las herramientas cuentan como "documentos", así que detecta cuando el modelo inventa datos que las herramientas no le dieron.
+
+El ciclo: corre la evaluación, mira qué casos eligen mal, mejora la descripción de esa herramienta en tu MCP, vuelve a correr con la nota "descripción de buscar_cliente v2" y compara.
+
+### Llamó con estos argumentos
+
+Esta comparación también sirve para agentes HTTP: n8n, endpoint propio, OpenAI o Anthropic, configurando *Dónde vienen sus argumentos*. Las plantillas ya lo traen. Formato de lo esperado, una llamada por línea:
+
+```
+consultar_cartera {"cliente": "123"}       ← esa herramienta, con al menos esos argumentos
+{"cliente": "123"}                         ← cualquier herramienta con ese argumento
+buscar_cliente                             ← solo que la haya llamado
+```
+
+Solo se revisan los argumentos que escribas; los demás pueden tener cualquier valor. Los valores se comparan sin mayúsculas ni tildes, `"123"` vale lo mismo que `123`, y en objetos anidados basta con un subconjunto.
+
+### Generar casos desde el MCP
+
+En **Generar con IA**, la lista *Traer las herramientas de un servidor MCP* llena el campo de herramientas con las de tu servidor. El borrador incluye las columnas `herramientas_esperadas` y `argumentos_esperados`.
+
+### Ejemplos incluidos
+
+La plataforma trae un servidor MCP de demostración en `/demo/mcp`, con las herramientas `consultar_cartera`, `buscar_cliente` y `crear_ticket`, y dos evaluaciones:
+- **Demo · MCP: ¿las herramientas responden bien?** Llamada directa. Encuentra un error real que dejé a propósito: `buscar_cliente` distingue mayúsculas.
+- **Demo · MCP: ¿el modelo elige bien las herramientas?** Modelo + MCP. Necesita el juez IA configurado, porque usa ese mismo modelo.
 
 ## Casos de prueba
 
@@ -130,6 +200,7 @@ Si la celda de lo esperado está vacía en un caso, esa comparación se **omite*
 | Cumple un patrón | Expresión regular | No |
 | Usó las herramientas | Llamó las herramientas esperadas, sin importar el orden; `ninguna` = no debía llamar herramientas | No |
 | Usó las herramientas en orden | Las herramientas esperadas aparecen en ese orden (puede haber otras en medio) | No |
+| Llamó con estos argumentos | La herramienta se llamó con esos argumentos (ver [Servidores MCP](#llamó-con-estos-argumentos)) | No |
 | Consume pocos tokens | Tokens máximos por caso (requiere la ruta de tokens en el agente) | No |
 | Responde a tiempo | Latencia máxima en milisegundos | No |
 | Correcta frente a lo esperado | Mismo significado que la respuesta de referencia (como *Correctness* de n8n), de 1 a 5, con explicación | Sí |
@@ -158,7 +229,7 @@ Con **Repeticiones por caso** mayor que 1, cada caso se corre varias veces y el 
 | `ConnectionStrings:Eval` | `Data Source=datos/eval.db` | Ruta de la base SQLite |
 | `Juez:Endpoint`, `Juez:ApiKey`, `Juez:Model` | vacío | Modelo juez (ver arriba) |
 | `Corridas:MaxConcurrency` | `3` | Casos en paralelo por corrida. Bájalo si el agente o n8n se saturan |
-| `Demo:Habilitado` | `true` | Expone el agente simulado en `/demo/helpdesk` |
+| `Demo:Habilitado` | `true` | Expone el agente simulado en `/demo/helpdesk` y el servidor MCP de demostración en `/demo/mcp` |
 | `Demo:CrearEjemplo` | `true` | Crea el ejemplo si la base está vacía |
 
 En variables de entorno, el `:` se escribe `__` (por ejemplo, `Corridas__MaxConcurrency=1`).
@@ -182,8 +253,8 @@ La carpeta `datos/` con la base SQLite queda junto al ejecutable. Si la publicas
 ## Desarrollo
 
 ```bash
-dotnet test        # 31 pruebas: rutas JSON, plantillas, importación, comparaciones, juez, generación de casos,
-                   # migración de la base y flujo completo por API
+dotnet test        # 44 pruebas: rutas JSON, plantillas, importación, comparaciones, juez, generación de casos,
+                   # migración de la base, MCP (directo y con modelo) y flujo completo por API
 ```
 
 Estructura:

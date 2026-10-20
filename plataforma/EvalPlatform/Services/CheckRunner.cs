@@ -1,5 +1,7 @@
 using System.Globalization;
 using System.Text;
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using EvalPlatform.Domain;
 using Microsoft.Extensions.AI;
@@ -112,7 +114,7 @@ public sealed class CheckRunner(IJudgeProvider judgeProvider)
             }
             case CheckTypes.Tools:
             {
-                if (string.IsNullOrWhiteSpace(data.Agent.ToolsPath))
+                if (!data.Agent.ProvidesTools)
                 {
                     return Set(result, CheckStatus.Error, "Configura en el agente la ruta de las herramientas para usar esta comparación.");
                 }
@@ -129,7 +131,7 @@ public sealed class CheckRunner(IJudgeProvider judgeProvider)
             }
             case CheckTypes.ToolsInOrder:
             {
-                if (string.IsNullOrWhiteSpace(data.Agent.ToolsPath))
+                if (!data.Agent.ProvidesTools)
                 {
                     return Set(result, CheckStatus.Error, "Configura en el agente la ruta de las herramientas para usar esta comparación.");
                 }
@@ -149,15 +151,45 @@ public sealed class CheckRunner(IJudgeProvider judgeProvider)
                         ? $"Llamó en el orden esperado ({calledText})."
                         : $"Se esperaba {string.Join(" → ", wanted)}; llamó: {calledText}.");
             }
+            case CheckTypes.ToolArguments:
+            {
+                if (!data.Agent.ProvidesToolArguments)
+                {
+                    return Set(result, CheckStatus.Error, "Configura en el agente la ruta de los argumentos de las herramientas para usar esta comparación.");
+                }
+                List<ExpectedCall> wanted;
+                try
+                {
+                    wanted = ExpectedCall.ParseAll(expected);
+                }
+                catch (FormatException ex)
+                {
+                    return Set(result, CheckStatus.Error, ex.Message);
+                }
+                var problems = new List<string>();
+                foreach (ExpectedCall want in wanted)
+                {
+                    if (want.FindMatch(data.Invocation.ToolCalls) is null)
+                    {
+                        problems.Add(want.Describe(data.Invocation.ToolCalls));
+                    }
+                }
+                return Score(result, (double)(wanted.Count - problems.Count) / wanted.Count, problems.Count == 0,
+                    problems.Count == 0
+                        ? $"Llamó con los argumentos esperados: {string.Join("; ", data.Invocation.ToolCalls)}."
+                        : string.Join(" ", problems));
+            }
             case CheckTypes.Tokens:
             {
-                if (string.IsNullOrWhiteSpace(data.Agent.TokensPath))
+                if (!data.Agent.ProvidesTokens)
                 {
                     return Set(result, CheckStatus.Error, "Configura en el agente la ruta de los tokens para usar esta comparación.");
                 }
                 if (data.Invocation.Tokens is not int tokens)
                 {
-                    return Set(result, CheckStatus.Error, $"La respuesta no trae tokens en la ruta '{data.Agent.TokensPath}'.");
+                    return Set(result, CheckStatus.Error, data.Agent.Kind == AgentKinds.Http
+                        ? $"La respuesta no trae tokens en la ruta '{data.Agent.TokensPath}'."
+                        : "El modelo no informó los tokens consumidos.");
                 }
                 double limit = check.Threshold ?? info.DefaultThreshold ?? 4000;
                 result.Display = $"{tokens} tokens";
@@ -184,14 +216,16 @@ public sealed class CheckRunner(IJudgeProvider judgeProvider)
         }
 
         bool needsContext = info.Family == CheckFamily.Rag;
-        if (needsContext && string.IsNullOrWhiteSpace(data.Agent.ContextPath))
+        if (needsContext && !data.Agent.ProvidesContext)
         {
             return Set(result, CheckStatus.Error, "Configura en el agente la ruta del contexto (documentos recuperados) para usar esta comparación.");
         }
         if (needsContext && data.Invocation.Context.Count == 0)
         {
             result.Display = "1/5";
-            return Score(result, 0, false, "El agente no recuperó ningún documento.");
+            return Score(result, 0, false, data.Agent.Kind == AgentKinds.McpModel
+                ? "El modelo no llamó ninguna herramienta del MCP, así que no tuvo información de dónde responder."
+                : "El agente no recuperó ningún documento.");
         }
 
         IList<ChatMessage> messages = [new ChatMessage(ChatRole.User, data.Input)];
@@ -305,4 +339,95 @@ public sealed class CheckRunner(IJudgeProvider judgeProvider)
     };
 
     private static string Short(string value) => value.Length <= 120 ? value : value[..120] + "…";
+}
+
+// Una llamada esperada en "Llamó con estos argumentos": nombre opcional y argumentos que deben coincidir.
+// Formato por línea: consultar_cartera {"cliente": "123"}  ·  {"cliente": "123"}  ·  consultar_cartera
+public sealed class ExpectedCall
+{
+    public string? Name { get; init; }
+    public JsonObject Arguments { get; init; } = [];
+
+    public static List<ExpectedCall> ParseAll(string text)
+    {
+        var calls = new List<ExpectedCall>();
+        foreach (string raw in text.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            int brace = raw.IndexOf('{');
+            string name = (brace < 0 ? raw : raw[..brace]).Trim().TrimEnd(':').Trim();
+            JsonObject args = [];
+            if (brace >= 0)
+            {
+                try
+                {
+                    args = JsonNode.Parse(raw[brace..]) as JsonObject ?? throw new FormatException();
+                }
+                catch (Exception ex) when (ex is JsonException or FormatException)
+                {
+                    throw new FormatException($"Los argumentos esperados no son un JSON válido: {raw}");
+                }
+            }
+            calls.Add(new ExpectedCall { Name = name.Length == 0 ? null : name, Arguments = args });
+        }
+        if (calls.Count == 0)
+        {
+            throw new FormatException("No hay llamadas esperadas.");
+        }
+        return calls;
+    }
+
+    public ToolCallRecord? FindMatch(IEnumerable<ToolCallRecord> calls) =>
+        calls.FirstOrDefault(c => NameMatches(c) && ArgumentsMatch(c));
+
+    public string Describe(IReadOnlyList<ToolCallRecord> calls)
+    {
+        string label = Name is null ? $"una herramienta con {Arguments.ToJsonString()}" : Arguments.Count == 0 ? Name : $"{Name} con {Arguments.ToJsonString()}";
+        List<ToolCallRecord> sameName = calls.Where(NameMatches).ToList();
+        if (calls.Count == 0)
+        {
+            return $"Se esperaba {label}, pero no llamó ninguna herramienta.";
+        }
+        if (sameName.Count == 0)
+        {
+            return $"Se esperaba {label}, pero llamó: {string.Join("; ", calls)}.";
+        }
+        return $"Se esperaba {label}, pero llamó {string.Join("; ", sameName)}.";
+    }
+
+    private bool NameMatches(ToolCallRecord call) => Name is null || call.Name.Equals(Name, StringComparison.OrdinalIgnoreCase);
+
+    private bool ArgumentsMatch(ToolCallRecord call)
+    {
+        if (Arguments.Count == 0)
+        {
+            return true;
+        }
+        JsonNode? actual;
+        try
+        {
+            actual = string.IsNullOrWhiteSpace(call.Arguments) ? null : JsonNode.Parse(call.Arguments);
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+        return actual is JsonObject obj && Subset(Arguments, obj);
+    }
+
+    // Lo esperado debe estar contenido en lo real: en objetos sobran claves; los valores
+    // se comparan sin mayúsculas ni tildes, y "123" vale lo mismo que 123.
+    private static bool Subset(JsonNode? expected, JsonNode? actual) => (expected, actual) switch
+    {
+        (JsonObject e, JsonObject a) => e.All(kv => a.TryGetPropertyValue(kv.Key, out JsonNode? v) && Subset(kv.Value, v)),
+        (JsonArray e, JsonArray a) => e.Count == a.Count && e.Zip(a).All(p => Subset(p.First, p.Second)),
+        (null, null) => true,
+        (null, _) or (_, null) => false,
+        _ => SameValue(JsonPath.ToText(expected), JsonPath.ToText(actual)),
+    };
+
+    private static bool SameValue(string expected, string actual) =>
+        double.TryParse(expected, NumberStyles.Float, CultureInfo.InvariantCulture, out double e)
+        && double.TryParse(actual, NumberStyles.Float, CultureInfo.InvariantCulture, out double a)
+            ? Math.Abs(e - a) < 1e-9
+            : CheckRunner.Normalize(expected) == CheckRunner.Normalize(actual);
 }

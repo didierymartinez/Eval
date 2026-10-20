@@ -4,7 +4,7 @@ Herramientas para evaluar si un agente o un prompt LLM responde lo que se espera
 
 ## Plataforma de evaluaciones (empieza aquí)
 
-Aplicación web en español, para técnicos y no técnicos: conectas el agente (webhook de n8n, endpoint en C# u otro, o la API de un modelo), subes los casos (Excel, CSV o Google Sheets), eliges qué comparar y ejecutas. Ves qué pasó y qué falló con su motivo, la comparación con la corrida anterior, y puedes descargar el resultado en Excel.
+Aplicación web en español, para técnicos y no técnicos: conectas el agente (webhook de n8n, endpoint en C# u otro, la API de un modelo o un servidor MCP por HTTP), subes los casos (Excel, CSV o Google Sheets), eliges qué comparar y ejecutas. Ves qué pasó y qué falló con su motivo, la comparación con la corrida anterior, y puedes descargar el resultado en Excel.
 
 ```bash
 cd plataforma

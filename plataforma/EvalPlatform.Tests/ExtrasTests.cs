@@ -78,7 +78,12 @@ public class SchemaUpgradeTests
             await using (var db = new EvalDbContext(options))
             {
                 await db.Database.EnsureCreatedAsync();
-                await db.Database.ExecuteSqlRawAsync("""ALTER TABLE "Runs" DROP COLUMN "Note"; ALTER TABLE "RunResults" DROP COLUMN "Tokens"; ALTER TABLE "Agents" DROP COLUMN "TokensPath";""");
+                await db.Database.ExecuteSqlRawAsync("""
+                    ALTER TABLE "Runs" DROP COLUMN "Note"; ALTER TABLE "RunResults" DROP COLUMN "Tokens"; ALTER TABLE "RunResults" DROP COLUMN "ToolCalls";
+                    ALTER TABLE "Agents" DROP COLUMN "TokensPath"; ALTER TABLE "Agents" DROP COLUMN "ToolArgumentsPath";
+                    ALTER TABLE "Agents" DROP COLUMN "Kind"; ALTER TABLE "Agents" DROP COLUMN "Mcp";
+                    INSERT INTO "Agents" ("Name", "Url", "Method", "Headers", "BodyTemplate", "ResponsePath", "TimeoutSeconds", "CreatedAt") VALUES ('viejo', 'http://x', 'POST', '{{}}', '', '', 10, 0);
+                    """);
             }
 
             await using (var db = new EvalDbContext(options))
@@ -88,6 +93,10 @@ public class SchemaUpgradeTests
                 db.Runs.Add(new Run { EvaluationName = "e", Note = "prompt v2" });
                 await db.SaveChangesAsync();
                 Assert.Equal("prompt v2", (await db.Runs.SingleAsync()).Note);
+                // Un agente creado antes del soporte MCP queda como agente HTTP.
+                Agent viejo = await db.Agents.SingleAsync();
+                Assert.Equal(AgentKinds.Http, viejo.Kind);
+                Assert.Equal("{{herramienta}}", viejo.Mcp.ToolTemplate);
             }
         }
         finally

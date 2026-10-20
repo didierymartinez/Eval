@@ -23,6 +23,7 @@ public static class CheckTypes
     public const string Regex = "regex";
     public const string Tools = "herramientas";
     public const string ToolsInOrder = "herramientas_orden";
+    public const string ToolArguments = "argumentos";
     public const string Tokens = "tokens";
     public const string Latency = "latencia";
     public const string Correctness = "correccion";
@@ -53,6 +54,9 @@ public static class CheckTypes
             CheckFamily.Behavior, true, false, null, null),
         new(ToolsInOrder, "Usó las herramientas en orden",
             "Como la anterior, pero las herramientas deben aparecer en ese orden (puede haber otras en medio). Útil cuando importa la secuencia: por ejemplo, buscar_pedido antes de crear_ticket.",
+            CheckFamily.Behavior, true, false, null, null),
+        new(ToolArguments, "Llamó con estos argumentos",
+            "Revisa los argumentos con que se llamó una herramienta. Escribe el nombre y un JSON con los argumentos que importan, por ejemplo: consultar_cartera {\"cliente\": \"123\"}. Los demás argumentos pueden tener cualquier valor. Varias llamadas: una por línea. Sin nombre ({\"cliente\": \"123\"}) sirve cualquier herramienta.",
             CheckFamily.Behavior, true, false, null, null),
         new(Tokens, "Consume pocos tokens",
             "El agente usó como máximo esa cantidad de tokens. Requiere configurar en el agente dónde vienen los tokens.",

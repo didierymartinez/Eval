@@ -16,6 +16,7 @@ public sealed class AgentInvocation
     public string Output { get; init; } = "";
     public List<string> Context { get; init; } = [];
     public List<string> Tools { get; init; } = [];
+    public List<ToolCallRecord> ToolCalls { get; init; } = [];
     public int? Tokens { get; init; }
     public long LatencyMs { get; init; }
     public string? Error { get; init; }
@@ -120,6 +121,7 @@ public sealed class AgentInvoker(IHttpClientFactory httpFactory)
 
             // Respuesta que no es JSON: se toma el texto completo como respuesta.
             string output = json is null ? raw : JsonPath.SelectText(json, agent.ResponsePath);
+            List<string> tools = json is null || string.IsNullOrWhiteSpace(agent.ToolsPath) ? [] : [.. JsonPath.Select(json, agent.ToolsPath).Select(JsonPath.ToText).Where(t => t.Length > 0)];
             return new AgentInvocation
             {
                 RequestBody = body,
@@ -128,12 +130,40 @@ public sealed class AgentInvoker(IHttpClientFactory httpFactory)
                 Json = json,
                 Output = output,
                 Context = json is null || string.IsNullOrWhiteSpace(agent.ContextPath) ? [] : JsonPath.SelectTexts(json, agent.ContextPath),
-                Tools = json is null || string.IsNullOrWhiteSpace(agent.ToolsPath) ? [] : [.. JsonPath.Select(json, agent.ToolsPath).Select(JsonPath.ToText).Where(t => t.Length > 0)],
+                Tools = tools,
+                ToolCalls = ToolCalls(json, tools, agent.ToolArgumentsPath),
                 Tokens = json is null || string.IsNullOrWhiteSpace(agent.TokensPath) ? null : SumTokens(json, agent.TokensPath),
                 LatencyMs = stopwatch.ElapsedMilliseconds,
             };
         }
     }
+
+    // Une cada herramienta con sus argumentos, por posición.
+    private static List<ToolCallRecord> ToolCalls(JsonNode? json, List<string> tools, string? argumentsPath)
+    {
+        IReadOnlyList<JsonNode?> arguments = json is null || string.IsNullOrWhiteSpace(argumentsPath) ? [] : JsonPath.Select(json, argumentsPath);
+        return tools.Select((name, i) => new ToolCallRecord
+        {
+            Name = name,
+            Arguments = i < arguments.Count && arguments[i] is JsonNode node ? NormalizeArguments(node) : null,
+        }).ToList();
+    }
+
+    // Los argumentos pueden venir como objeto o como texto con JSON (OpenAI los manda así).
+    public static string NormalizeArguments(JsonNode node)
+    {
+        string text = JsonPath.ToText(node);
+        try
+        {
+            return JsonNode.Parse(text)?.ToJsonString(s_compact) ?? text;
+        }
+        catch (JsonException)
+        {
+            return text;
+        }
+    }
+
+    private static readonly JsonSerializerOptions s_compact = new() { Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
 
     // Suma los números que encuentre en una o varias rutas separadas por coma.
     private static int? SumTokens(JsonNode json, string paths)

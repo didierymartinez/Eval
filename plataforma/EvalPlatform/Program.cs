@@ -21,6 +21,9 @@ builder.Services.AddHttpClient(AgentInvoker.HttpClientName, c => c.Timeout = Tim
 
 builder.Services.AddSingleton<IJudgeProvider, OpenAiCompatibleJudgeProvider>();
 builder.Services.AddSingleton<AgentInvoker>();
+builder.Services.AddSingleton<IAgentModelFactory, OpenAiCompatibleModelFactory>();
+builder.Services.AddSingleton<McpInvoker>();
+builder.Services.AddSingleton<AgentDispatcher>();
 builder.Services.AddSingleton<DatasetImporter>();
 builder.Services.AddSingleton<CheckRunner>();
 builder.Services.AddSingleton<RunQueue>();
@@ -32,6 +35,15 @@ builder.Services.ConfigureHttpJsonOptions(o =>
     o.SerializerOptions.Converters.Add(new JsonStringEnumConverter());
     o.SerializerOptions.Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping;
 });
+
+bool demo = builder.Configuration.GetValue("Demo:Habilitado", true);
+if (demo)
+{
+    // Servidor MCP de demostración en /demo/mcp.
+    builder.Services.AddMcpServer(o => o.ServerInfo = new() { Name = "demo-cartera", Version = "1.0" })
+        .WithHttpTransport(o => o.Stateless = true)
+        .WithTools<DemoMcpTools>();
+}
 
 var app = builder.Build();
 
@@ -45,8 +57,10 @@ app.UseStaticFiles();
 app.MapEvalApi();
 
 // Agente de demostración para probar la plataforma sin conectar nada.
-if (app.Configuration.GetValue("Demo:Habilitado", true))
+if (demo)
 {
+    app.MapMcp("/demo/mcp");
+
     app.MapPost("/demo/helpdesk", (JsonElement body) =>
         DemoHelpdeskAgent.Respond(body.TryGetProperty("mensaje", out JsonElement m) ? m.GetString() ?? "" : ""));
 

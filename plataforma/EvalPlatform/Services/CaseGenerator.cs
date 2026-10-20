@@ -16,7 +16,7 @@ public sealed record GenerateCasesInput(
 // se genera con Claude. Es un punto de partida: hay que revisarlo y corregirlo antes de confiar en él.
 public static class CaseGenerator
 {
-    public static readonly List<string> Columns = ["id", "categoria", "input", "respuesta_esperada", "herramientas_esperadas", "debe_contener", "tipo"];
+    public static readonly List<string> Columns = ["id", "categoria", "input", "respuesta_esperada", "herramientas_esperadas", "argumentos_esperados", "debe_contener", "tipo"];
 
     public static async Task<ImportedTable> GenerateAsync(ChatConfiguration judge, GenerateCasesInput input, CancellationToken ct)
     {
@@ -43,7 +43,9 @@ public static class CaseGenerator
             que debería dar el agente; si debe escalar o negarse, dilo así. Usa solo información que esté arriba: no inventes datos.
 
             Responde SOLO con un arreglo JSON, sin texto antes ni después, con objetos de esta forma:
-            [{"categoria": "facturacion", "input": "...", "respuesta_esperada": "...", "herramientas_esperadas": "herramienta1|herramienta2 o ninguna", "debe_contener": "dato clave|otro dato o vacío", "tipo": "normal|limite|fuera_de_alcance"}]
+            [{"categoria": "facturacion", "input": "...", "respuesta_esperada": "...", "herramientas_esperadas": "herramienta1|herramienta2 o ninguna", "argumentos_esperados": "herramienta1 {\"parametro\": \"valor\"} o vacío", "debe_contener": "dato clave|otro dato o vacío", "tipo": "normal|limite|fuera_de_alcance"}]
+            En "argumentos_esperados" pon solo los argumentos que se deducen de la pregunta (por ejemplo el código de cliente
+            que menciona), con el nombre de la herramienta y un JSON; si hay varias llamadas, sepáralas con un salto de línea.
             """;
 
         ChatResponse response = await judge.ChatClient.GetResponseAsync(
@@ -68,6 +70,7 @@ public static class CaseGenerator
                 ["input"] = Text(obj, "input"),
                 ["respuesta_esperada"] = Text(obj, "respuesta_esperada"),
                 ["herramientas_esperadas"] = Text(obj, "herramientas_esperadas"),
+                ["argumentos_esperados"] = Text(obj, "argumentos_esperados"),
                 ["debe_contener"] = Text(obj, "debe_contener"),
                 ["tipo"] = Text(obj, "tipo"),
             });

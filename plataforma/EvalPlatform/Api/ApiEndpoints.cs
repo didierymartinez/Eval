@@ -16,7 +16,10 @@ public sealed record AgentInput(
     string? ContextPath,
     string? ToolsPath,
     int? TimeoutSeconds,
-    string? TokensPath = null);
+    string? TokensPath = null,
+    string? Kind = null,
+    McpSettings? Mcp = null,
+    string? ToolArgumentsPath = null);
 
 public sealed record AgentTestInput(AgentInput Agent, string Input, Dictionary<string, string>? Row);
 
@@ -101,14 +104,35 @@ public static class ApiEndpoints
             return Results.NoContent();
         });
 
+        // Herramientas que expone un servidor MCP (sin guardar el agente).
+        g.MapPost("/herramientas", async (AgentInput input, McpInvoker mcp, CancellationToken ct) =>
+        {
+            if (Validate(input) is string error)
+            {
+                return Bad(error);
+            }
+            try
+            {
+                return Results.Ok(await mcp.ListToolsAsync(Apply(new Agent(), input), ct));
+            }
+            catch (McpConnectionException ex)
+            {
+                return Bad(ex.Message);
+            }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                return Bad($"El servidor MCP no respondió en {input.TimeoutSeconds ?? 120} segundos.");
+            }
+        });
+
         // Prueba la conexión con un texto de ejemplo, sin guardar nada.
-        g.MapPost("/probar", async (AgentTestInput test, AgentInvoker invoker, CancellationToken ct) =>
+        g.MapPost("/probar", async (AgentTestInput test, AgentDispatcher dispatcher, CancellationToken ct) =>
         {
             if (Validate(test.Agent) is string error)
             {
                 return Bad(error);
             }
-            AgentInvocation r = await invoker.InvokeAsync(Apply(new Agent(), test.Agent), test.Input ?? "", test.Row ?? [], ct);
+            AgentInvocation r = await dispatcher.InvokeAsync(Apply(new Agent(), test.Agent), test.Input ?? "", test.Row ?? [], ct);
             return Results.Ok(new
             {
                 ok = r.Succeeded,
@@ -119,6 +143,7 @@ public static class ApiEndpoints
                 output = r.Output,
                 context = r.Context,
                 tools = r.Tools,
+                toolCalls = r.ToolCalls,
                 tokens = r.Tokens,
                 raw = r.RawResponse,
             });
@@ -127,6 +152,15 @@ public static class ApiEndpoints
 
     private static string? Validate(AgentInput input)
     {
+        string kind = input.Kind ?? AgentKinds.Http;
+        if (kind is not (AgentKinds.Http or AgentKinds.McpDirect or AgentKinds.McpModel))
+        {
+            return $"Tipo de agente desconocido: {kind}.";
+        }
+        if (kind == AgentKinds.McpDirect && string.IsNullOrWhiteSpace(input.Mcp?.ToolTemplate))
+        {
+            return "Indica qué herramienta del MCP se llama (un nombre fijo o {{columna}}).";
+        }
         if (string.IsNullOrWhiteSpace(input.Name))
         {
             return "Ponle un nombre al agente.";
@@ -139,7 +173,7 @@ public static class ApiEndpoints
         {
             return "El método debe ser GET, POST, PUT o PATCH.";
         }
-        if (!string.IsNullOrWhiteSpace(input.BodyTemplate))
+        if (kind == AgentKinds.Http && !string.IsNullOrWhiteSpace(input.BodyTemplate))
         {
             try
             {
@@ -164,6 +198,9 @@ public static class ApiEndpoints
         agent.ContextPath = string.IsNullOrWhiteSpace(input.ContextPath) ? null : input.ContextPath.Trim();
         agent.ToolsPath = string.IsNullOrWhiteSpace(input.ToolsPath) ? null : input.ToolsPath.Trim();
         agent.TokensPath = string.IsNullOrWhiteSpace(input.TokensPath) ? null : input.TokensPath.Trim();
+        agent.ToolArgumentsPath = string.IsNullOrWhiteSpace(input.ToolArgumentsPath) ? null : input.ToolArgumentsPath.Trim();
+        agent.Kind = input.Kind ?? AgentKinds.Http;
+        agent.Mcp = input.Mcp ?? new McpSettings();
         agent.TimeoutSeconds = Math.Clamp(input.TimeoutSeconds ?? 120, 1, 1800);
         return agent;
     }
@@ -635,21 +672,39 @@ public static class ApiEndpoints
         new("n8n", "Webhook de n8n (AI Agent)",
             "Un workflow con Webhook → AI Agent → Respond to Webhook. Activa 'Return Intermediate Steps' en el AI Agent para ver los documentos y herramientas.",
             new AgentInput("Mi agente en n8n", "https://tu-n8n/webhook/mi-agente", "POST", new() { ["X-Eval"] = "1" },
-                """{ "mensaje": "{{input}}" }""", "output", "intermediateSteps[*].observation", "intermediateSteps[*].action.tool", 120)),
+                """{ "mensaje": "{{input}}" }""", "output", "intermediateSteps[*].observation", "intermediateSteps[*].action.tool", 120,
+                ToolArgumentsPath: "intermediateSteps[*].action.toolInput")),
         new("eval-run", "Endpoint de evaluación (C# u otro)",
             "Un endpoint propio que devuelve { output, toolCalls[], ... }, como samples/AgentEndpoint de este repositorio.",
             new AgentInput("Mi agente", "http://localhost:5150/eval/run", "POST", new() { ["X-Eval-Key"] = "{{env:AGENT_EVAL_KEY}}" },
-                """{ "input": "{{input}}" }""", "output", null, "toolCalls[*].name", 120, "usage.inputTokens, usage.outputTokens")),
+                """{ "input": "{{input}}" }""", "output", null, "toolCalls[*].name", 120, "usage.inputTokens, usage.outputTokens",
+                ToolArgumentsPath: "toolCalls[*].arguments")),
         new("openai", "Prompt directo a un modelo (API compatible con OpenAI)",
             "Para evaluar un prompt sin agente: el prompt de sistema va en el cuerpo y la clave en una variable de entorno.",
             new AgentInput("Mi prompt", "https://api.openai.com/v1/chat/completions", "POST", new() { ["Authorization"] = "Bearer {{env:OPENAI_API_KEY}}" },
                 """{ "model": "gpt-5-mini", "messages": [ { "role": "system", "content": "Eres un asistente de soporte. Responde en español, breve y amable." }, { "role": "user", "content": "{{input}}" } ] }""",
-                "choices[0].message.content", null, "choices[0].message.tool_calls[*].function.name", 120, "usage.total_tokens")),
+                "choices[0].message.content", null, "choices[0].message.tool_calls[*].function.name", 120, "usage.total_tokens",
+                ToolArgumentsPath: "choices[0].message.tool_calls[*].function.arguments")),
         new("anthropic", "Prompt directo a Claude (API de Anthropic)",
             "Igual que la anterior pero con la API de Messages de Anthropic.",
             new AgentInput("Mi prompt con Claude", "https://api.anthropic.com/v1/messages", "POST",
                 new() { ["x-api-key"] = "{{env:ANTHROPIC_API_KEY}}", ["anthropic-version"] = "2023-06-01" },
                 """{ "model": "claude-sonnet-5-5", "max_tokens": 1024, "system": "Eres un asistente de soporte. Responde en español, breve y amable.", "messages": [ { "role": "user", "content": "{{input}}" } ] }""",
-                "content[*].text", null, "content[*].name", 120, "usage.input_tokens, usage.output_tokens")),
+                "content[*].text", null, "content[*].name", 120, "usage.input_tokens, usage.output_tokens",
+                ToolArgumentsPath: "content[*].input")),
+        new("mcp", "Servidor MCP: llamar herramientas",
+            "Llama una herramienta del MCP (tools/call) con los argumentos de cada caso y compara el resultado. Por defecto toma las columnas 'herramienta' y 'argumentos'.",
+            new AgentInput("Mi servidor MCP", "https://tu-servidor/mcp", null, new() { ["Authorization"] = "Bearer {{env:MCP_TOKEN}}" },
+                null, "", null, null, 60, Kind: AgentKinds.McpDirect, Mcp: new McpSettings())),
+        new("mcp_modelo", "Servidor MCP con un modelo",
+            "Un modelo recibe las herramientas del MCP y la pregunta del caso. Sirve para saber si elige la herramienta correcta, con los argumentos correctos, según los nombres y descripciones de tus herramientas.",
+            new AgentInput("Modelo + mi MCP", "https://tu-servidor/mcp", null, new() { ["Authorization"] = "Bearer {{env:MCP_TOKEN}}" },
+                null, "", null, null, 120, Kind: AgentKinds.McpModel, Mcp: new McpSettings
+                {
+                    SystemPrompt = "Eres un asistente. Usa las herramientas disponibles cuando las necesites y responde en español.",
+                    ModelEndpoint = "https://api.openai.com/v1/",
+                    ModelName = "",
+                    ModelApiKey = "{{env:OPENAI_API_KEY}}",
+                })),
     ];
 }

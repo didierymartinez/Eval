@@ -17,7 +17,11 @@ public sealed class EvalDbContext(DbContextOptions<EvalDbContext> options) : DbC
     protected override void OnModelCreating(ModelBuilder model)
     {
         // Las listas y diccionarios se guardan como JSON en una columna de texto.
-        model.Entity<Agent>(e => e.Json(a => a.Headers));
+        model.Entity<Agent>(e =>
+        {
+            e.Json(a => a.Headers);
+            e.Json(a => a.Mcp);
+        });
         model.Entity<Dataset>(e =>
         {
             e.Json(d => d.Columns);
@@ -35,6 +39,7 @@ public sealed class EvalDbContext(DbContextOptions<EvalDbContext> options) : DbC
             e.Json(r => r.Row);
             e.Json(r => r.Context);
             e.Json(r => r.Tools);
+            e.Json(r => r.ToolCalls);
             e.Json(r => r.Checks);
             e.Property(r => r.Outcome).HasConversion<string>();
         });

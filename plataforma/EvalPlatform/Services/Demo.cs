@@ -68,16 +68,27 @@ public static class DemoHelpdeskAgent
 
 public static class DemoSeeder
 {
+    public const string HelpdeskAgentName = "Demo · helpdesk simulado (estilo n8n)";
+
     public static async Task SeedAsync(EvalDbContext db, string baseUrl)
     {
-        if (await db.Agents.AnyAsync())
+        if (!await db.Agents.AnyAsync())
         {
-            return;
+            await SeedHelpdeskAsync(db, baseUrl);
         }
+        // Las bases creadas antes del soporte MCP reciben los ejemplos MCP si todavía usan la demo.
+        if (await db.Agents.AnyAsync(a => a.Name == HelpdeskAgentName))
+        {
+            await DemoMcpSeeder.SeedAsync(db, baseUrl);
+        }
+    }
+
+    private static async Task SeedHelpdeskAsync(EvalDbContext db, string baseUrl)
+    {
 
         var agent = new Agent
         {
-            Name = "Demo · helpdesk simulado (estilo n8n)",
+            Name = HelpdeskAgentName,
             Url = $"{baseUrl.TrimEnd('/')}/demo/helpdesk",
             BodyTemplate = """{ "mensaje": "{{input}}", "ticket_id": "{{id}}" }""",
             ResponsePath = "output.respuesta",
