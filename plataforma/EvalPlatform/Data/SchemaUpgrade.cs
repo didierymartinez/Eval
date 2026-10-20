@@ -16,7 +16,28 @@ public static class SchemaUpgrade
         ("Runs", "Note", "TEXT NULL"),
         ("RunResults", "Tokens", "INTEGER NULL"),
         ("RunResults", "ToolCalls", "TEXT NOT NULL DEFAULT '[]'"),
+        ("Agents", "Executor", "TEXT NULL"),
+        ("Runs", "Executor", "TEXT NULL"),
     ];
+
+    // Tablas nuevas; mismo esquema que crea EnsureCreated (ver la prueba de migración).
+    private const string CreateRunTasks = """
+        CREATE TABLE IF NOT EXISTS "RunTasks" (
+            "Id" INTEGER NOT NULL CONSTRAINT "PK_RunTasks" PRIMARY KEY AUTOINCREMENT,
+            "RunId" INTEGER NOT NULL,
+            "Group" TEXT NOT NULL,
+            "RowIndex" INTEGER NOT NULL,
+            "Attempt" INTEGER NOT NULL,
+            "Input" TEXT NOT NULL,
+            "Row" TEXT NOT NULL,
+            "State" TEXT NOT NULL,
+            "Worker" TEXT NULL,
+            "Deliveries" INTEGER NOT NULL,
+            "LeaseUntil" INTEGER NULL
+        );
+        CREATE INDEX IF NOT EXISTS "IX_RunTasks_Group_State" ON "RunTasks" ("Group", "State");
+        CREATE INDEX IF NOT EXISTS "IX_RunTasks_RunId" ON "RunTasks" ("RunId");
+        """;
 
     public static async Task ApplyAsync(EvalDbContext db)
     {
@@ -25,6 +46,11 @@ public static class SchemaUpgrade
         await connection.OpenAsync();
         try
         {
+            await using (SqliteCommand create = connection.CreateCommand())
+            {
+                create.CommandText = CreateRunTasks;
+                await create.ExecuteNonQueryAsync();
+            }
             foreach (var (table, column, type) in s_columns)
             {
                 await using SqliteCommand info = connection.CreateCommand();

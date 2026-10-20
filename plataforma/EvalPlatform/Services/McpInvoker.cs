@@ -324,6 +324,10 @@ internal sealed class TextResultTool(McpClientTool tool) : DelegatingAIFunction(
 // Elige cómo llamar al agente según su tipo.
 public sealed class AgentDispatcher(AgentInvoker http, McpInvoker mcp)
 {
-    public Task<AgentInvocation> InvokeAsync(Agent agent, string input, IReadOnlyDictionary<string, string> row, CancellationToken ct) =>
-        AgentKinds.IsMcp(agent.Kind) ? mcp.InvokeAsync(agent, input, row, ct) : http.InvokeAsync(agent, input, row, ct);
+    public Task<AgentInvocation> InvokeAsync(Agent agent, string input, IReadOnlyDictionary<string, string> row, CancellationToken ct) => agent.Kind switch
+    {
+        AgentKinds.Code => Task.FromResult(new AgentInvocation { Error = "Este agente lo ejecuta tu propio código: la plataforma no puede llamarlo. Ejecuta una evaluación y deja corriendo tu ejecutor." }),
+        AgentKinds.McpDirect or AgentKinds.McpModel => mcp.InvokeAsync(agent, input, row, ct),
+        _ => http.InvokeAsync(agent, input, row, ct),
+    };
 }

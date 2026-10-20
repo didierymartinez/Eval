@@ -1,0 +1,6 @@
+**/bin/
+**/obj/
+**/datos/
+**/eval-results/
+**/node_modules/
+.git/

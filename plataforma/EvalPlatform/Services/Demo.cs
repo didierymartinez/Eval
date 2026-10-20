@@ -5,7 +5,7 @@ using Microsoft.EntityFrameworkCore;
 
 namespace EvalPlatform.Services;
 
-// Agente de mentira que responde como un workflow de n8n con AI Agent + vector store,
+// Agente de mentira que responde como un agente con RAG que devuelve sus pasos intermedios,
 // para probar la plataforma sin conectar nada. La base de conocimiento es mínima y
 // la búsqueda es por palabras. Le falta a propósito cómo crear usuarios (HD-005) y
 // tiene datos de la empresa que lo hacen responder un caso que debía escalar (HD-006).
@@ -68,10 +68,14 @@ public static class DemoHelpdeskAgent
 
 public static class DemoSeeder
 {
-    public const string HelpdeskAgentName = "Demo · helpdesk simulado (estilo n8n)";
+    public const string HelpdeskAgentName = "Demo · agente de helpdesk simulado";
+
+    // Las versiones anteriores llamaban a la demo "Demo · helpdesk simulado (…)"; se renombra al arrancar.
+    private const string OldHelpdeskAgentPrefix = "Demo · helpdesk simulado (";
 
     public static async Task SeedAsync(EvalDbContext db, string baseUrl)
     {
+        await db.Agents.Where(a => a.Name.StartsWith(OldHelpdeskAgentPrefix)).ExecuteUpdateAsync(s => s.SetProperty(a => a.Name, HelpdeskAgentName));
         if (!await db.Agents.AnyAsync())
         {
             await SeedHelpdeskAsync(db, baseUrl);

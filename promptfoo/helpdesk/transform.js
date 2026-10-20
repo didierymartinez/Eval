@@ -1,9 +1,9 @@
-// Normaliza la respuesta del webhook de n8n para el eval de helpdesk.
+// Normaliza la respuesta del webhook del agente para el eval de helpdesk.
 //
-// Se espera que el workflow responda (nodo "Respond to Webhook") con la salida del
-// AI Agent, con "Return Intermediate Steps" activado:
+// Se espera que el agente responda con su salida y sus pasos intermedios (formato de
+// agentes con herramientas, como LangChain):
 //   { "output": { "puede_responder": true, "respuesta": "..." }, "intermediateSteps": [...] }
-// "output" también puede ser texto plano o un JSON en texto. Si el workflow ya arma
+// "output" también puede ser texto plano o un JSON en texto. Si el agente arma
 // su propio JSON, se aceptan "respuesta", "puede_responder" y "contextos" en la raíz.
 //
 // Devuelve:
@@ -28,7 +28,7 @@ const tryParse = (value) => {
 };
 
 // Las observaciones de la herramienta de vector store llegan con formas distintas
-// según la versión de n8n: texto, [{type:'text', text:'{"pageContent":...}'}],
+// según el orquestador y la herramienta: texto, [{type:'text', text:'{"pageContent":...}'}],
 // [{pageContent, metadata}], etc. Se aplanan a una lista de textos.
 const toTexts = (value) => {
   value = tryParse(value);

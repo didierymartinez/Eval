@@ -189,7 +189,9 @@ public sealed class CheckRunner(IJudgeProvider judgeProvider)
                 {
                     return Set(result, CheckStatus.Error, data.Agent.Kind == AgentKinds.Http
                         ? $"La respuesta no trae tokens en la ruta '{data.Agent.TokensPath}'."
-                        : "El modelo no informó los tokens consumidos.");
+                        : data.Agent.Kind == AgentKinds.Code
+                            ? "El ejecutor no reportó los tokens de este caso."
+                            : "El modelo no informó los tokens consumidos.");
                 }
                 double limit = check.Threshold ?? info.DefaultThreshold ?? 4000;
                 result.Display = $"{tokens} tokens";
@@ -304,7 +306,7 @@ public sealed class CheckRunner(IJudgeProvider judgeProvider)
         };
     }
 
-    // 1 - distancia de edición / largo mayor (como "String similarity" de n8n).
+    // 1 - distancia de edición / largo mayor.
     public static double Similarity(string a, string b)
     {
         if (a.Length == 0 && b.Length == 0)

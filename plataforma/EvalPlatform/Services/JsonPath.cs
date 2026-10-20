@@ -9,7 +9,7 @@ namespace EvalPlatform.Services;
 //   output.respuesta               -> propiedades anidadas
 //   choices[0].message.content     -> índice de una lista
 //   intermediateSteps[*].observation -> todos los elementos de una lista
-// Dos comodidades para respuestas de n8n y similares:
+// Dos comodidades para respuestas de orquestadores de agentes:
 //   - Si se pide una propiedad sobre una lista, se aplica a cada elemento.
 //   - Si un valor es texto que contiene JSON, se interpreta como JSON al seguir navegando.
 public static partial class JsonPath

@@ -57,7 +57,7 @@ public sealed class OpenAiCompatibleJudgeProvider : IJudgeProvider
 // evaluadores de Microsoft.Extensions.AI.Evaluation: <S0>razonamiento</S0><S1>explicación</S1><S2>puntaje</S2>.
 public static partial class CustomJudges
 {
-    // Como "Correctness" de n8n, pero con explicación: qué falta o qué contradice.
+    // Corrección frente a la respuesta de referencia, con explicación: qué falta o qué contradice.
     public static Task<(double? Score, string Reason)> CorrectnessAsync(ChatConfiguration judge, string question, string answer, string expected, CancellationToken ct) =>
         AskAsync(judge, $$"""
             Eres un evaluador estricto. Compara el SIGNIFICADO de la RESPUESTA con la RESPUESTA ESPERADA.

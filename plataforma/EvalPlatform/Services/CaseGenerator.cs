@@ -12,8 +12,7 @@ public sealed record GenerateCasesInput(
     string? Knowledge,
     int? Count);
 
-// Arma un primer borrador de casos con el modelo juez, como en el video de n8n donde el dataset
-// se genera con Claude. Es un punto de partida: hay que revisarlo y corregirlo antes de confiar en él.
+// Arma un primer borrador de casos con el modelo juez. Es un punto de partida: hay que revisarlo y corregirlo antes de confiar en él.
 public static class CaseGenerator
 {
     public static readonly List<string> Columns = ["id", "categoria", "input", "respuesta_esperada", "herramientas_esperadas", "argumentos_esperados", "debe_contener", "tipo"];

@@ -9,7 +9,7 @@ namespace EvalPlatform.Services;
 
 public sealed class RunnerOptions
 {
-    // Casos en paralelo por corrida. Bájalo si el agente (o n8n) se satura.
+    // Casos en paralelo por corrida. Bájalo si el agente se satura.
     public int MaxConcurrency { get; set; } = 3;
 }
 
@@ -49,11 +49,60 @@ public sealed class RunQueue
     }
 }
 
+// Guarda el resultado de un caso y recalcula los contadores de la corrida. Lo usan la plataforma
+// y los ejecutores remotos; los contadores se cuentan en la base para que varios ejecutores
+// en paralelo no se pisen.
+public sealed class RunRecorder(IDbContextFactory<EvalDbContext> dbFactory)
+{
+    private readonly SemaphoreSlim _lock = new(1, 1);
+
+    public async Task RecordAsync(RunResult result, CancellationToken ct, Func<EvalDbContext, Task>? alsoInTransaction = null)
+    {
+        await _lock.WaitAsync(ct);
+        try
+        {
+            await using EvalDbContext db = await dbFactory.CreateDbContextAsync(ct);
+            db.RunResults.Add(result);
+            if (alsoInTransaction is not null)
+            {
+                await alsoInTransaction(db);
+            }
+            await db.SaveChangesAsync(ct);
+
+            var counts = await db.RunResults.Where(r => r.RunId == result.RunId)
+                .GroupBy(r => r.Outcome)
+                .Select(g => new { g.Key, Count = g.Count() })
+                .ToListAsync(ct);
+            int Count(CaseOutcome o) => counts.FirstOrDefault(c => c.Key == o)?.Count ?? 0;
+            int completed = counts.Sum(c => c.Count);
+
+            Run run = await db.Runs.SingleAsync(r => r.Id == result.RunId, ct);
+            run.Completed = completed;
+            run.Passed = Count(CaseOutcome.Passed);
+            run.Failed = Count(CaseOutcome.Failed);
+            run.Errors = Count(CaseOutcome.Error);
+            // Las corridas remotas terminan cuando llega el último resultado.
+            if (run.Executor is not null && run.Status == RunStatus.Running && completed >= run.Total)
+            {
+                run.Status = RunStatus.Completed;
+                run.FinishedAt = DateTimeOffset.UtcNow;
+            }
+            await db.SaveChangesAsync(ct);
+        }
+        finally
+        {
+            _lock.Release();
+        }
+    }
+}
+
 // Corre una evaluación: cada caso (y cada repetición) va al agente y pasa por las comparaciones.
+// Si el agente lo llama un ejecutor remoto, solo deja los casos listos para que los tomen.
 public sealed class RunExecutor(
     IDbContextFactory<EvalDbContext> dbFactory,
     AgentDispatcher invoker,
     CheckRunner checks,
+    RunRecorder recorder,
     IOptions<RunnerOptions> options,
     ILogger<RunExecutor> logger)
 {
@@ -86,51 +135,39 @@ public sealed class RunExecutor(
             run.Status = RunStatus.Running;
             run.StartedAt = DateTimeOffset.UtcNow;
             run.Total = dataset.Rows.Count * Math.Max(1, evaluation.Repetitions);
+
+            if (agent.RunsRemotely)
+            {
+                run.Executor = RemoteTasks.GroupOf(agent);
+                db.RunTasks.AddRange(Cases(dataset, evaluation).Select(c => new RunTask
+                {
+                    RunId = run.Id,
+                    Group = run.Executor,
+                    RowIndex = c.Index,
+                    Attempt = c.Attempt,
+                    Row = dataset.Rows[c.Index],
+                    Input = InputOf(evaluation, dataset.Rows[c.Index]),
+                }));
+                await db.SaveChangesAsync(cancellationToken);
+                return;
+            }
             await db.SaveChangesAsync(cancellationToken);
         }
 
-        var cases = Enumerable.Range(0, dataset.Rows.Count)
-            .SelectMany(i => Enumerable.Range(1, Math.Max(1, evaluation.Repetitions)).Select(attempt => (Index: i, Attempt: attempt)))
-            .ToList();
-
-        int completed = 0, passed = 0, failed = 0, errors = 0;
-        var writeLock = new SemaphoreSlim(1, 1);
         RunStatus final = RunStatus.Completed;
         string? finalError = null;
-
         try
         {
             await Parallel.ForEachAsync(
-                cases,
+                Cases(dataset, evaluation),
                 new ParallelOptions { MaxDegreeOfParallelism = Math.Max(1, options.Value.MaxConcurrency), CancellationToken = cancellationToken },
                 async (c, ct) =>
                 {
-                    RunResult result = await EvaluateCaseAsync(run, agent, evaluation, dataset.Rows[c.Index], c.Index, c.Attempt, ct);
-
-                    await writeLock.WaitAsync(ct);
-                    try
-                    {
-                        completed++;
-                        switch (result.Outcome)
-                        {
-                            case CaseOutcome.Passed: passed++; break;
-                            case CaseOutcome.Failed: failed++; break;
-                            default: errors++; break;
-                        }
-
-                        await using EvalDbContext db = await dbFactory.CreateDbContextAsync(ct);
-                        db.RunResults.Add(result);
-                        await db.SaveChangesAsync(ct);
-                        await db.Runs.Where(r => r.Id == runId).ExecuteUpdateAsync(s => s
-                            .SetProperty(r => r.Completed, completed)
-                            .SetProperty(r => r.Passed, passed)
-                            .SetProperty(r => r.Failed, failed)
-                            .SetProperty(r => r.Errors, errors), ct);
-                    }
-                    finally
-                    {
-                        writeLock.Release();
-                    }
+                    Dictionary<string, string> row = dataset.Rows[c.Index];
+                    string input = InputOf(evaluation, row);
+                    AgentInvocation invocation = await invoker.InvokeAsync(agent, input, row, ct);
+                    RunResult result = await GradeAsync(run, agent, row, c.Index, c.Attempt, input, invocation, ct);
+                    await recorder.RecordAsync(result, ct);
                 });
         }
         catch (OperationCanceledException)
@@ -153,11 +190,16 @@ public sealed class RunExecutor(
         }
     }
 
-    public async Task<RunResult> EvaluateCaseAsync(Run run, Agent agent, Evaluation evaluation, Dictionary<string, string> row, int index, int attempt, CancellationToken ct)
-    {
-        string input = row.TryGetValue(evaluation.InputColumn, out string? value) ? value : "";
-        AgentInvocation invocation = await invoker.InvokeAsync(agent, input, row, ct);
+    private static IEnumerable<(int Index, int Attempt)> Cases(Dataset dataset, Evaluation evaluation) =>
+        Enumerable.Range(0, dataset.Rows.Count)
+            .SelectMany(i => Enumerable.Range(1, Math.Max(1, evaluation.Repetitions)).Select(attempt => (i, attempt)));
 
+    public static string InputOf(Evaluation evaluation, Dictionary<string, string> row) =>
+        row.TryGetValue(evaluation.InputColumn, out string? value) ? value : "";
+
+    // Aplica las comparaciones de la corrida a la respuesta del agente (venga de donde venga).
+    public async Task<RunResult> GradeAsync(Run run, Agent agent, Dictionary<string, string> row, int index, int attempt, string input, AgentInvocation invocation, CancellationToken ct)
+    {
         var result = new RunResult
         {
             RunId = run.Id,
@@ -204,11 +246,11 @@ public sealed class RunWorker(RunQueue queue, IServiceScopeFactory scopes, IDbCo
 {
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        // Corridas que quedaron a medias por un reinicio: las en curso se marcan fallidas
-        // y las que esperaban vuelven a la cola.
+        // Corridas que quedaron a medias por un reinicio: las que ejecutaba la plataforma se marcan
+        // fallidas y las que esperaban vuelven a la cola. Las remotas siguen: sus casos están en la base.
         await using (EvalDbContext db = await dbFactory.CreateDbContextAsync(stoppingToken))
         {
-            await db.Runs.Where(r => r.Status == RunStatus.Running).ExecuteUpdateAsync(s => s
+            await db.Runs.Where(r => r.Status == RunStatus.Running && r.Executor == null).ExecuteUpdateAsync(s => s
                 .SetProperty(r => r.Status, RunStatus.Failed)
                 .SetProperty(r => r.Error, "Interrumpida porque la plataforma se reinició.")
                 .SetProperty(r => r.FinishedAt, DateTimeOffset.UtcNow), stoppingToken);

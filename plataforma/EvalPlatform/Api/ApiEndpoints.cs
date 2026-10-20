@@ -19,7 +19,8 @@ public sealed record AgentInput(
     string? TokensPath = null,
     string? Kind = null,
     McpSettings? Mcp = null,
-    string? ToolArgumentsPath = null);
+    string? ToolArgumentsPath = null,
+    string? Executor = null);
 
 public sealed record AgentTestInput(AgentInput Agent, string Input, Dictionary<string, string>? Row);
 
@@ -153,9 +154,26 @@ public static class ApiEndpoints
     private static string? Validate(AgentInput input)
     {
         string kind = input.Kind ?? AgentKinds.Http;
-        if (kind is not (AgentKinds.Http or AgentKinds.McpDirect or AgentKinds.McpModel))
+        if (kind is not (AgentKinds.Http or AgentKinds.McpDirect or AgentKinds.McpModel or AgentKinds.Code))
         {
             return $"Tipo de agente desconocido: {kind}.";
+        }
+        string? group = string.IsNullOrWhiteSpace(input.Executor) ? null : input.Executor.Trim().ToLowerInvariant();
+        if (kind == AgentKinds.Code && group is null)
+        {
+            return "Indica el grupo de ejecutores: es el nombre con que tu código pide los casos (ej. red-finanzas).";
+        }
+        if (group is not null && !RemoteTasks.IsValidGroup(group))
+        {
+            return "El grupo de ejecutores debe tener letras minúsculas, números, - o _ (ej. red-finanzas).";
+        }
+        if (string.IsNullOrWhiteSpace(input.Name))
+        {
+            return "Ponle un nombre al agente.";
+        }
+        if (kind == AgentKinds.Code)
+        {
+            return null;
         }
         if (kind == AgentKinds.McpDirect && string.IsNullOrWhiteSpace(input.Mcp?.ToolTemplate))
         {
@@ -190,7 +208,7 @@ public static class ApiEndpoints
     private static Agent Apply(Agent agent, AgentInput input)
     {
         agent.Name = input.Name.Trim();
-        agent.Url = input.Url.Trim();
+        agent.Url = input.Url?.Trim() ?? "";
         agent.Method = string.IsNullOrWhiteSpace(input.Method) ? "POST" : input.Method.Trim().ToUpperInvariant();
         agent.Headers = (input.Headers ?? []).Where(h => !string.IsNullOrWhiteSpace(h.Key)).ToDictionary(h => h.Key.Trim(), h => h.Value ?? "");
         agent.BodyTemplate = input.BodyTemplate ?? "";
@@ -200,6 +218,7 @@ public static class ApiEndpoints
         agent.TokensPath = string.IsNullOrWhiteSpace(input.TokensPath) ? null : input.TokensPath.Trim();
         agent.ToolArgumentsPath = string.IsNullOrWhiteSpace(input.ToolArgumentsPath) ? null : input.ToolArgumentsPath.Trim();
         agent.Kind = input.Kind ?? AgentKinds.Http;
+        agent.Executor = string.IsNullOrWhiteSpace(input.Executor) ? null : input.Executor.Trim().ToLowerInvariant();
         agent.Mcp = input.Mcp ?? new McpSettings();
         agent.TimeoutSeconds = Math.Clamp(input.TimeoutSeconds ?? 120, 1, 1800);
         return agent;
@@ -457,6 +476,7 @@ public static class ApiEndpoints
             }
             var runIds = await db.Runs.Where(r => r.EvaluationId == id).Select(r => r.Id).ToListAsync();
             await db.RunResults.Where(r => runIds.Contains(r.RunId)).ExecuteDeleteAsync();
+            await db.RunTasks.Where(t => runIds.Contains(t.RunId)).ExecuteDeleteAsync();
             await db.Runs.Where(r => r.EvaluationId == id).ExecuteDeleteAsync();
             db.Evaluations.Remove(evaluation);
             await db.SaveChangesAsync();
@@ -572,6 +592,7 @@ public static class ApiEndpoints
         r.AgentName,
         r.DatasetName,
         r.Note,
+        r.Executor,
         r.Status,
         r.Error,
         r.Total,
@@ -603,13 +624,20 @@ public static class ApiEndpoints
         g.MapGet("/{id:int}/resultados", async (int id, EvalDbContext db) =>
             await db.RunResults.Where(r => r.RunId == id).OrderBy(r => r.RowIndex).ThenBy(r => r.Attempt).ToListAsync());
 
-        g.MapPost("/{id:int}/cancelar", async (int id, EvalDbContext db, RunQueue queue) =>
+        g.MapPost("/{id:int}/cancelar", async (int id, EvalDbContext db, RunQueue queue, RemoteTasks tasks) =>
         {
             if (await db.Runs.FindAsync(id) is not Run run)
             {
                 return Results.NotFound();
             }
-            if (run.Status == RunStatus.Queued)
+            if (run.Executor is not null && run.Status == RunStatus.Running)
+            {
+                await tasks.CancelRunAsync(db, id, CancellationToken.None);
+                run.Status = RunStatus.Cancelled;
+                run.FinishedAt = DateTimeOffset.UtcNow;
+                await db.SaveChangesAsync();
+            }
+            else if (run.Status == RunStatus.Queued)
             {
                 run.Status = RunStatus.Cancelled;
                 run.FinishedAt = DateTimeOffset.UtcNow;
@@ -633,6 +661,7 @@ public static class ApiEndpoints
                 return Conflict("La corrida sigue en curso. Cancélala primero.");
             }
             await db.RunResults.Where(r => r.RunId == id).ExecuteDeleteAsync();
+            await db.RunTasks.Where(t => t.RunId == id).ExecuteDeleteAsync();
             db.Runs.Remove(run);
             await db.SaveChangesAsync();
             return Results.NoContent();
@@ -669,9 +698,9 @@ public static class ApiEndpoints
 
     private static readonly AgentTemplate[] s_templates =
     [
-        new("n8n", "Webhook de n8n (AI Agent)",
-            "Un workflow con Webhook → AI Agent → Respond to Webhook. Activa 'Return Intermediate Steps' en el AI Agent para ver los documentos y herramientas.",
-            new AgentInput("Mi agente en n8n", "https://tu-n8n/webhook/mi-agente", "POST", new() { ["X-Eval"] = "1" },
+        new("pasos", "Agente con pasos intermedios (webhook)",
+            "Un agente que responde { output, intermediateSteps } (formato de agentes con herramientas, como LangChain): la respuesta, los documentos que recuperó y las herramientas que usó.",
+            new AgentInput("Mi agente", "https://tu-servidor/webhook/mi-agente", "POST", new() { ["X-Eval"] = "1" },
                 """{ "mensaje": "{{input}}" }""", "output", "intermediateSteps[*].observation", "intermediateSteps[*].action.tool", 120,
                 ToolArgumentsPath: "intermediateSteps[*].action.toolInput")),
         new("eval-run", "Endpoint de evaluación (C# u otro)",

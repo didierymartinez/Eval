@@ -13,6 +13,7 @@ public sealed class EvalDbContext(DbContextOptions<EvalDbContext> options) : DbC
     public DbSet<Evaluation> Evaluations => Set<Evaluation>();
     public DbSet<Run> Runs => Set<Run>();
     public DbSet<RunResult> RunResults => Set<RunResult>();
+    public DbSet<RunTask> RunTasks => Set<RunTask>();
 
     protected override void OnModelCreating(ModelBuilder model)
     {
@@ -42,6 +43,14 @@ public sealed class EvalDbContext(DbContextOptions<EvalDbContext> options) : DbC
             e.Json(r => r.ToolCalls);
             e.Json(r => r.Checks);
             e.Property(r => r.Outcome).HasConversion<string>();
+        });
+
+        model.Entity<RunTask>(e =>
+        {
+            e.HasIndex(t => new { t.Group, t.State });
+            e.HasIndex(t => t.RunId);
+            e.Json(t => t.Row);
+            e.Property(t => t.State).HasConversion<string>();
         });
 
         // SQLite no ordena DateTimeOffset; se guarda como ticks UTC.

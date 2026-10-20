@@ -151,7 +151,7 @@ async function pageHome() {
           h('button', { class: 'primary', onclick: () => runEvaluation(demo.id, { askNote: false }) }, 'Ejecutar el ejemplo'))
       : null,
     h('div', { class: 'steps' },
-      step(1, agents.length > 0, 'Conecta tu agente', 'Dónde está (URL) y cómo se le habla. Sirve un webhook de n8n, un endpoint propio o la API de un modelo.', '#/agentes', agents.length ? `${agents.length} agente(s)` : 'Conectar agente'),
+      step(1, agents.length > 0, 'Conecta tu agente', 'Dónde está y cómo se le habla: un endpoint o webhook, la API de un modelo, un servidor MCP o tu propio código en la red del agente.', '#/agentes', agents.length ? `${agents.length} agente(s)` : 'Conectar agente'),
       step(2, datasets.length > 0, 'Sube los casos de prueba', 'Un Excel, CSV o Google Sheet con la entrada y lo que esperas en cada caso.', '#/casos', datasets.length ? `${datasets.length} grupo(s) de casos` : 'Subir casos'),
       step(3, evaluations.length > 0, 'Define qué comparar', 'Elige qué revisar en cada respuesta: que contenga algo, que sea correcta según un juez IA, que use los documentos…', '#/evaluaciones', evaluations.length ? `${evaluations.length} evaluación(es)` : 'Crear evaluación'),
       step(4, runs.length > 0, 'Ejecuta y revisa', 'Mira qué casos pasaron, cuáles fallaron y por qué. Descarga el resultado en Excel.', '#/resultados', runs.length ? 'Ver resultados' : 'Aún no hay resultados')),
@@ -182,15 +182,33 @@ async function pageAgents() {
       h('tbody', null, agents.length ? agents.map((a) =>
         h('tr', { class: 'clickable', onclick: () => go(`#/agentes/${a.id}`) },
           h('td', null, h('strong', null, a.name)),
-          h('td', null, h('span', { class: `badge ${a.kind && a.kind !== 'http' ? 'info' : 'skip'}` }, kindLabel(a.kind))),
-          h('td', { class: 'mono cell-clip' }, a.kind && a.kind !== 'http' ? a.url : `${a.method} ${a.url}`))) : emptyRow(3, 'Aún no hay agentes. Crea el primero.')))));
+          h('td', null, h('span', { class: `badge ${a.kind && a.kind !== 'http' ? 'info' : 'skip'}` }, kindLabel(a.kind)),
+            a.executor ? h('div', { class: 'small muted' }, `vía ejecutores: ${a.executor}`) : null),
+          h('td', { class: 'mono cell-clip' }, a.kind === 'codigo' ? '—' : a.kind && a.kind !== 'http' ? a.url : `${a.method} ${a.url}`))) : emptyRow(3, 'Aún no hay agentes. Crea el primero.')))));
 }
 
 const AGENT_KINDS = [
-  ['http', 'Agente o API por HTTP', 'Webhook de n8n, endpoint propio en C# u otro, o la API de un modelo.'],
+  ['http', 'Agente o API por HTTP', 'Webhook o endpoint propio (C#, Java, Python…) o la API de un modelo.'],
   ['mcp', 'Servidor MCP: llamar herramientas', 'Llama una herramienta del MCP con los argumentos de cada caso y compara el resultado.'],
   ['mcp_modelo', 'Servidor MCP con un modelo', 'Un modelo recibe las herramientas del MCP: evalúa si elige la correcta y con qué argumentos.'],
+  ['codigo', 'Tu propio código', 'Cualquier tecnología (librería, gRPC, colas…): tu código pide los casos, llama al agente y devuelve las respuestas.'],
 ];
+
+async function executorStatus(group) {
+  try {
+    const s = await api('/ejecutores/estado');
+    return { enabled: s.habilitado, group: s.grupos.find((g) => g.grupo === group) };
+  } catch {
+    return { enabled: false, group: null };
+  }
+}
+
+function executorBadge(state) {
+  const online = (state.group?.ejecutores || []).filter((e) => e.conectado);
+  return online.length
+    ? h('span', { class: 'badge ok' }, `${online.length} ejecutor(es) conectado(s): ${online.map((e) => e.nombre).join(', ')}`)
+    : h('span', { class: 'badge warn' }, 'Ningún ejecutor conectado ahora');
+}
 const kindLabel = (kind) => (AGENT_KINDS.find((k) => k[0] === (kind || 'http')) || AGENT_KINDS[0])[1];
 const toolCallText = (t) => (t.arguments ? `${t.name}(${t.arguments})` : t.name);
 
@@ -217,6 +235,16 @@ async function pageAgentForm(id) {
     mcp: { toolTemplate: '{{herramienta}}', argumentsTemplate: '{{argumentos}}' },
   };
   a.kind = a.kind || 'http';
+  a.remote = !!a.executor;
+  const executorInfo = h('div', { style: { marginTop: '8px' } });
+  const refreshExecutor = async () => {
+    const group = (a.executor || '').trim().toLowerCase();
+    if (!group) return replace(executorInfo);
+    const state = await executorStatus(group);
+    replace(executorInfo,
+      !state.enabled ? h('div', { class: 'notice warn small' }, 'La API de ejecutores está apagada en este servidor: configura la variable Ejecutores__Token (ver README).') : null,
+      h('div', null, executorBadge(state), state.group?.pendientes ? h('span', { class: 'muted small' }, ` · ${state.group.pendientes} caso(s) esperando`) : null));
+  };
   a.mcp = { toolTemplate: '{{herramienta}}', argumentsTemplate: '{{argumentos}}', ...(a.mcp || {}) };
   let headers = Object.entries(a.headers || {});
   let testInput = '';
@@ -225,6 +253,7 @@ async function pageAgentForm(id) {
 
   const collect = () => ({
     kind: a.kind, name: a.name, url: a.url, method: a.method,
+    executor: a.kind === 'codigo' || a.remote ? (a.executor || '').trim().toLowerCase() : null,
     headers: Object.fromEntries(headers.filter(([k]) => k.trim())),
     bodyTemplate: a.bodyTemplate, responsePath: a.responsePath, contextPath: a.contextPath, toolsPath: a.toolsPath,
     toolArgumentsPath: a.toolArgumentsPath, tokensPath: a.tokensPath, timeoutSeconds: Number(a.timeoutSeconds) || 120,
@@ -327,7 +356,7 @@ async function pageAgentForm(id) {
       h('div', { class: 'grid-2' },
         field('Dónde vienen los documentos recuperados (opcional, RAG)', bind('contextPath', { placeholder: 'intermediateSteps[*].observation' }), 'Necesario para las comparaciones de base de conocimiento.'),
         field('Dónde vienen los tokens consumidos (opcional)', bind('tokensPath', { placeholder: 'usage.total_tokens' }),
-          'Varias rutas separadas por coma se suman. El webhook de n8n no los devuelve por defecto.')),
+          'Varias rutas separadas por coma se suman (ej. usage.input_tokens, usage.output_tokens).')),
       h('div', { class: 'grid-2' },
         field('Dónde vienen las herramientas usadas (opcional)', bind('toolsPath', { placeholder: 'intermediateSteps[*].action.tool' }), 'Necesario para "Usó las herramientas".'),
         field('Dónde vienen sus argumentos (opcional)', bind('toolArgumentsPath', { placeholder: 'intermediateSteps[*].action.toolInput' }), 'En el mismo orden que las herramientas. Necesario para "Llamó con estos argumentos".'))),
@@ -363,10 +392,55 @@ async function pageAgentForm(id) {
     field('Prompt de sistema', bindMcp('systemPrompt', { multiline: true, rows: 3, prose: true, placeholder: 'Ej. Eres el asistente de cartera. Usa las herramientas para consultar datos; no inventes cifras.' })),
     field('Herramientas que se ofrecen (opcional)', bindMcp('allowedTools', { placeholder: 'consultar_cartera, buscar_cliente' }), 'Separadas por coma. Vacío = todas las del servidor.'));
 
+  const groupInput = () => h('input', {
+    type: 'text', value: a.executor || '', placeholder: 'red-finanzas',
+    oninput: (e) => { a.executor = e.target.value; }, onchange: refreshExecutor,
+  });
+
+  const whereCard = () => h('div', { class: 'card' },
+    h('h3', null, '¿Desde dónde se llama al agente?'),
+    h('label', { class: 'inline', style: { marginBottom: '6px' } },
+      h('input', { type: 'radio', name: 'where', checked: !a.remote, onchange: () => { a.remote = false; draw(); } }),
+      'Desde la plataforma (el agente es alcanzable desde aquí)'),
+    h('label', { class: 'inline' },
+      h('input', { type: 'radio', name: 'where', checked: a.remote, onchange: () => { a.remote = true; draw(); } }),
+      'Desde un ejecutor dentro de la red del agente'),
+    a.remote ? h('div', { style: { marginTop: '12px' } },
+      field('Grupo de ejecutores', groupInput(),
+        h('span', null, 'El ejecutor se instala en la red del agente y solo hace conexiones salientes hacia la plataforma: ',
+          h('code', null, 'EvalPlatform ejecutor --plataforma <url> --grupo <grupo>'), '. Las variables ', h('code', null, '{{env:…}}'), ' se leen en el ejecutor, así que los secretos se quedan en esa red.')),
+      executorInfo) : null);
+
+  const codeCard = () => h('div', { class: 'card' },
+    field('Nombre', bind('name', { placeholder: 'Ej. Agente de cobranza (servicio Java)' })),
+    field('Grupo de ejecutores', groupInput(), 'Nombre con que tu código pide los casos. Letras minúsculas, números, - o _.'),
+    executorInfo,
+    h('h3', { style: { marginTop: '14px' } }, 'Cómo funciona'),
+    h('ol', { class: 'small', style: { margin: '0 0 10px', paddingLeft: '20px' } },
+      h('li', null, 'Ejecutas la evaluación aquí; los casos quedan esperando.'),
+      h('li', null, 'Tu código, en la red y la tecnología del agente, pide casos: ', h('code', null, 'POST /api/ejecutores/tomar'), '.'),
+      h('li', null, 'Llama al agente como sea (librería, gRPC, cola, consola) y devuelve la respuesta: ', h('code', null, 'POST /api/ejecutores/resultado'), '.'),
+      h('li', null, 'La plataforma califica con las comparaciones y el juez IA, y muestra los resultados.')),
+    h('p', { class: 'small muted' }, 'Hay un ejecutor de ejemplo en Python sin dependencias en ', h('code', null, 'plataforma/ejecutores/python/ejecutor.py'), ': solo cambias la función que llama a tu agente. Detalle de la API en el README.'),
+    h('details', null, h('summary', null, 'Ver la API con curl'), h('pre', null,
+`# 1. Pedir casos (espera hasta 20 s si no hay)
+curl -X POST $PLATAFORMA/api/ejecutores/tomar \\
+  -H "X-Ejecutor-Token: $TOKEN" -H "Content-Type: application/json" \\
+  -d '{"group": "${a.executor || 'mi-grupo'}", "worker": "mi-servicio", "waitSeconds": 20}'
+# → [{ "taskId": 15, "input": "¿Cuánto debe el cliente 123?", "row": { ... } }]
+
+# 2. Devolver la respuesta del agente
+curl -X POST $PLATAFORMA/api/ejecutores/resultado \\
+  -H "X-Ejecutor-Token: $TOKEN" -H "Content-Type: application/json" \\
+  -d '{"taskId": 15, "output": "Debe $1.200.000",
+       "toolCalls": [{"name": "consultar_cartera", "arguments": {"cliente": "123"}}],
+       "context": [], "tokens": 180, "latencyMs": 950}'`)));
+
   const testCard = () => h('div', { class: 'card' },
     h('h3', null, 'Probar'),
     field(a.kind === 'mcp' ? 'Entrada de ejemplo (se usa si la herramienta o los argumentos tienen {{input}})' : 'Escribe una entrada de ejemplo',
       h('textarea', { rows: 2, style: { fontFamily: 'inherit', fontSize: '15px', minHeight: '0' }, placeholder: a.kind === 'http' ? 'Ej. No puedo entrar, me dice que mi usuario está bloqueado' : 'Ej. ¿Cuánto debe el cliente 123?', oninput: (e) => (testInput = e.target.value) })),
+    a.remote ? h('div', { class: 'notice info small' }, 'Probar llama al agente desde la plataforma. Si el agente solo es alcanzable desde la red del ejecutor, la prueba va a fallar aunque esté bien configurado: en ese caso ejecuta una evaluación con pocos casos.') : null,
     h('button', { type: 'button', onclick: runTest }, 'Probar'),
     testResult);
 
@@ -377,15 +451,15 @@ async function pageAgentForm(id) {
         type: 'button', class: `template${a.kind === kind ? ' selected' : ''}`, 'aria-pressed': a.kind === kind ? 'true' : 'false',
         onclick: () => { a.kind = kind; draw(); },
       }, h('strong', null, label), h('span', null, desc))))),
-    a.kind === 'http' ? httpCards() : [mcpCommon(), a.kind === 'mcp' ? mcpDirectCard() : mcpModelCard()],
-    testCard(),
+    a.kind === 'codigo' ? codeCard()
+      : [a.kind === 'http' ? httpCards() : [mcpCommon(), a.kind === 'mcp' ? mcpDirectCard() : mcpModelCard()], whereCard(), testCard()],
     h('div', { class: 'actions' },
       h('button', { class: 'primary', onclick: save }, 'Guardar agente'),
       h('a', { class: 'button', href: '#/agentes' }, 'Volver'),
       id ? h('button', { class: 'danger', onclick: () => confirmAndDelete('¿Eliminar este agente?', `/agentes/${id}`, '#/agentes') }, 'Eliminar') : null));
 
   const container = h('div');
-  const draw = () => replace(container, form());
+  const draw = () => { replace(container, form()); refreshExecutor(); };
   draw();
 
   render(
@@ -823,9 +897,11 @@ async function pageRun(id) {
   let results = [];
   let data;
   let timer;
+  let executor = null;
 
   const load = async () => {
     [data, results] = await Promise.all([api(`/corridas/${id}`), api(`/corridas/${id}/resultados`)]);
+    if (data.run.executor && (data.run.status === 'Running' || data.run.status === 'Queued')) executor = await executorStatus(data.run.executor);
     draw();
     const active = data.run.status === 'Queued' || data.run.status === 'Running';
     if (active) timer = setTimeout(load, 1500);
@@ -856,7 +932,12 @@ async function pageRun(id) {
       run.note ? h('div', { class: 'notice info' }, h('strong', null, 'Qué cambió en esta corrida: '), run.note) : null,
       active ? h('div', { class: 'card' },
         h('strong', null, run.status === 'Queued' ? 'En cola…' : `Ejecutando: ${run.completed} de ${run.total} casos`),
-        h('div', { class: 'progress' }, h('span', { style: { width: `${run.total ? (run.completed / run.total) * 100 : 0}%` } }))) : null,
+        h('div', { class: 'progress' }, h('span', { style: { width: `${run.total ? (run.completed / run.total) * 100 : 0}%` } })),
+        run.executor && executor ? h('div', { class: 'small' },
+          `Los casos los ejecuta el grupo de ejecutores "${run.executor}". `, executorBadge(executor),
+          !(executor.group?.ejecutores || []).some((e) => e.conectado)
+            ? h('div', { class: 'muted', style: { marginTop: '6px' } }, 'La corrida avanza cuando un ejecutor de ese grupo se conecte. Los casos esperan; no se pierden si la plataforma se reinicia.')
+            : null) : null) : null,
       run.status === 'Failed' ? h('div', { class: 'notice bad' }, h('strong', null, 'La corrida falló. '), run.error || '') : null,
       run.status === 'Cancelled' ? h('div', { class: 'notice warn' }, 'La corrida se canceló; se muestran los casos que alcanzaron a ejecutarse.') : null,
       summary.skippedJudgeChecks > 0 ? h('div', { class: 'notice warn' }, `${summary.skippedJudgeChecks} comparaciones con juez IA no se ejecutaron porque el juez no está configurado. Los casos se aprobaron o fallaron solo con el resto de comparaciones.`) : null,

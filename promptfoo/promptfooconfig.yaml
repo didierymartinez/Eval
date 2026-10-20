@@ -1,6 +1,6 @@
 # yaml-language-server: $schema=https://promptfoo.dev/config-schema.json
 #
-# Evalúa tu agente por URL, igual que el flujo de n8n:
+# Evalúa tu agente por URL:
 #   lee el dataset (CSV o Google Sheets) -> llama al agente por cada fila
 #   -> compara contra lo esperado -> guarda resultados (UI, JSON o Sheets).
 #

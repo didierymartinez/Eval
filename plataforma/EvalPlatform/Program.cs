@@ -7,6 +7,13 @@ using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
 using Microsoft.EntityFrameworkCore;
 
+// Modo ejecutor: corre dentro de otra red y le lleva los casos al agente (ver ExecutorWorker).
+if (args.Length > 0 && args[0] == "ejecutor")
+{
+    Environment.ExitCode = await ExecutorWorker.RunAsync(args[1..]);
+    return;
+}
+
 var builder = WebApplication.CreateBuilder(args);
 
 string connectionString = builder.Configuration.GetConnectionString("Eval") ?? "Data Source=datos/eval.db";
@@ -15,6 +22,7 @@ EnsureSqliteFolder(connectionString, builder.Environment.ContentRootPath);
 builder.Services.AddDbContextFactory<EvalDbContext>(o => o.UseSqlite(connectionString));
 builder.Services.Configure<JudgeOptions>(builder.Configuration.GetSection("Juez"));
 builder.Services.Configure<RunnerOptions>(builder.Configuration.GetSection("Corridas"));
+builder.Services.Configure<ExecutorOptions>(builder.Configuration.GetSection("Ejecutores"));
 
 // Sin límite global: cada agente define su propio tiempo máximo.
 builder.Services.AddHttpClient(AgentInvoker.HttpClientName, c => c.Timeout = Timeout.InfiniteTimeSpan);
@@ -27,6 +35,8 @@ builder.Services.AddSingleton<AgentDispatcher>();
 builder.Services.AddSingleton<DatasetImporter>();
 builder.Services.AddSingleton<CheckRunner>();
 builder.Services.AddSingleton<RunQueue>();
+builder.Services.AddSingleton<RunRecorder>();
+builder.Services.AddSingleton<RemoteTasks>();
 builder.Services.AddScoped<RunExecutor>();
 builder.Services.AddHostedService<RunWorker>();
 
@@ -55,6 +65,7 @@ await using (EvalDbContext db = await app.Services.GetRequiredService<IDbContext
 app.UseDefaultFiles();
 app.UseStaticFiles();
 app.MapEvalApi();
+app.MapExecutorApi();
 
 // Agente de demostración para probar la plataforma sin conectar nada.
 if (demo)

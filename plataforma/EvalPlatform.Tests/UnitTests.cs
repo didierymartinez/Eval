@@ -8,9 +8,9 @@ namespace EvalPlatform.Tests;
 
 public class JsonPathTests
 {
-    // Forma real de un AI Agent de n8n con "Return Intermediate Steps": la observación es JSON en texto
+    // Respuesta típica de un agente con pasos intermedios: la observación es JSON en texto
     // que a su vez trae JSON en texto.
-    private static readonly JsonNode s_n8n = JsonNode.Parse("""
+    private static readonly JsonNode s_steps = JsonNode.Parse("""
         [{
           "output": "{\"puede_responder\": true, \"respuesta\": \"Use Olvidé mi contraseña.\"}",
           "intermediateSteps": [
@@ -24,23 +24,23 @@ public class JsonPathTests
     [Fact]
     public void Navega_listas_y_json_en_texto()
     {
-        Assert.Equal("Use Olvidé mi contraseña.", JsonPath.SelectText(s_n8n, "output.respuesta"));
-        Assert.Equal("true", JsonPath.SelectText(s_n8n, "output.puede_responder"));
-        Assert.Equal(["base_conocimiento", "crear_ticket"], JsonPath.Select(s_n8n, "intermediateSteps[*].action.tool").Select(JsonPath.ToText));
-        Assert.Equal("crear_ticket", JsonPath.SelectText(s_n8n, "[0].intermediateSteps[1].action.tool"));
+        Assert.Equal("Use Olvidé mi contraseña.", JsonPath.SelectText(s_steps, "output.respuesta"));
+        Assert.Equal("true", JsonPath.SelectText(s_steps, "output.puede_responder"));
+        Assert.Equal(["base_conocimiento", "crear_ticket"], JsonPath.Select(s_steps, "intermediateSteps[*].action.tool").Select(JsonPath.ToText));
+        Assert.Equal("crear_ticket", JsonPath.SelectText(s_steps, "[0].intermediateSteps[1].action.tool"));
     }
 
     [Fact]
     public void Aplana_documentos_recuperados()
     {
-        Assert.Equal(["Bloqueo por 30 minutos", "ok"], JsonPath.SelectTexts(s_n8n, "intermediateSteps[*].observation"));
+        Assert.Equal(["Bloqueo por 30 minutos", "ok"], JsonPath.SelectTexts(s_steps, "intermediateSteps[*].observation"));
     }
 
     [Fact]
     public void Ruta_vacia_devuelve_todo_y_ruta_inexistente_nada()
     {
-        Assert.Single(JsonPath.Select(s_n8n, ""));
-        Assert.Equal("", JsonPath.SelectText(s_n8n, "no.existe"));
+        Assert.Single(JsonPath.Select(s_steps, ""));
+        Assert.Equal("", JsonPath.SelectText(s_steps, "no.existe"));
         Assert.Equal("", JsonPath.SelectText(JsonNode.Parse("""{"a":[1,2]}"""), "a[5]"));
     }
 }

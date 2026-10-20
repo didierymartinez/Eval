@@ -69,6 +69,34 @@ public class AgentInvokerTests
 public class SchemaUpgradeTests
 {
     [Fact]
+    public async Task La_tabla_RunTasks_manual_coincide_con_la_de_EF()
+    {
+        static async Task<List<string>> Columns(string path, bool viaUpgrade)
+        {
+            var options = new DbContextOptionsBuilder<EvalDbContext>().UseSqlite($"Data Source={path}").Options;
+            await using var db = new EvalDbContext(options);
+            await db.Database.EnsureCreatedAsync();
+            if (viaUpgrade)
+            {
+                await db.Database.ExecuteSqlRawAsync("""DROP TABLE "RunTasks";""");
+                await SchemaUpgrade.ApplyAsync(db);
+            }
+            return await db.Database.SqlQueryRaw<string>("""SELECT name || ' ' || type || ' ' || "notnull" AS "Value" FROM pragma_table_info('RunTasks') ORDER BY cid""").ToListAsync();
+        }
+        string a = Path.Combine(Path.GetTempPath(), $"eval-a-{Guid.NewGuid():N}.db"), b = Path.Combine(Path.GetTempPath(), $"eval-b-{Guid.NewGuid():N}.db");
+        try
+        {
+            Assert.Equal(await Columns(a, false), await Columns(b, true));
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            File.Delete(a);
+            File.Delete(b);
+        }
+    }
+
+    [Fact]
     public async Task Agrega_columnas_nuevas_a_una_base_vieja()
     {
         string path = Path.Combine(Path.GetTempPath(), $"eval-schema-{Guid.NewGuid():N}.db");
@@ -82,6 +110,8 @@ public class SchemaUpgradeTests
                     ALTER TABLE "Runs" DROP COLUMN "Note"; ALTER TABLE "RunResults" DROP COLUMN "Tokens"; ALTER TABLE "RunResults" DROP COLUMN "ToolCalls";
                     ALTER TABLE "Agents" DROP COLUMN "TokensPath"; ALTER TABLE "Agents" DROP COLUMN "ToolArgumentsPath";
                     ALTER TABLE "Agents" DROP COLUMN "Kind"; ALTER TABLE "Agents" DROP COLUMN "Mcp";
+                    ALTER TABLE "Agents" DROP COLUMN "Executor"; ALTER TABLE "Runs" DROP COLUMN "Executor";
+                    DROP TABLE "RunTasks";
                     INSERT INTO "Agents" ("Name", "Url", "Method", "Headers", "BodyTemplate", "ResponsePath", "TimeoutSeconds", "CreatedAt") VALUES ('viejo', 'http://x', 'POST', '{{}}', '', '', 10, 0);
                     """);
             }
@@ -97,6 +127,9 @@ public class SchemaUpgradeTests
                 Agent viejo = await db.Agents.SingleAsync();
                 Assert.Equal(AgentKinds.Http, viejo.Kind);
                 Assert.Equal("{{herramienta}}", viejo.Mcp.ToolTemplate);
+                db.RunTasks.Add(new RunTask { RunId = 1, Group = "g", Input = "x", Row = new() { ["a"] = "b" }, LeaseUntil = DateTimeOffset.UtcNow });
+                await db.SaveChangesAsync();
+                Assert.Equal("b", (await db.RunTasks.SingleAsync()).Row["a"]);
             }
         }
         finally

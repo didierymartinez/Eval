@@ -1,6 +1,6 @@
 # ¿Mi base de conocimiento alcanza para el helpdesk de primer nivel?
 
-Guía para evaluar un agente de n8n (webhook → AI Agent → vector store) que decide si puede resolver un ticket con lo que hay en el RAG o si lo escala. Complementa [la investigación general](investigacion-evals-llm.md).
+Guía para evaluar un agente detrás de un webhook (agente → vector store) que decide si puede resolver un ticket con lo que hay en el RAG o si lo escala. Complementa [la investigación general](investigacion-evals-llm.md).
 
 ---
 
@@ -67,29 +67,29 @@ De dónde sacarlos:
 
 ---
 
-## 3. Cambios en el workflow de n8n
+## 3. Qué debe devolver el agente
 
-El eval llama a tu webhook por HTTP y necesita que la respuesta traiga tres cosas: la respuesta, la decisión y lo que recuperó el RAG.
+El eval llama al agente por HTTP y necesita que la respuesta traiga tres cosas: la respuesta, la decisión y lo que recuperó el RAG. Si el agente no es alcanzable desde donde corre el eval, o no se expone por HTTP, usa la plataforma con un ejecutor dentro de su red (ver [`plataforma/README.md`](../plataforma/README.md#agentes-en-redes-privadas-u-otras-tecnologías)).
 
-### 3.1 Un webhook aparte para evaluación (recomendado)
+### 3.1 Una ruta aparte para evaluación (recomendado)
 
-Un workflow de n8n puede tener varios triggers. Agrega un segundo **Webhook** (por ejemplo, ruta `helpdesk-eval`) conectado al mismo AI Agent:
+Expón una ruta solo para evaluar (por ejemplo, `/webhook/helpdesk-eval`) que llame al mismo agente:
 
-- En **Respond**, elige *Using 'Respond to Webhook' Node* (o *When Last Node Finishes*), para que la llamada espere la respuesta del agente. Si tu webhook actual responde de inmediato (*Immediately*), no devuelve nada que evaluar.
-- Las ramas que tienen efectos (responder al cliente en el helpdesk, crear tickets, mandar correos) **no** se conectan a este trigger, o pasan por un nodo **IF** que revisa el header `X-Eval` que manda el eval.
-- Protege la ruta con *Header Auth*.
+- Debe **esperar la respuesta del agente** y devolverla en la misma llamada. Si tu webhook responde de inmediato y procesa después, no hay nada que evaluar.
+- Las acciones con efectos (responder al cliente en el helpdesk, crear tickets, mandar correos) **no** deben ejecutarse en esta ruta, o deben saltarse cuando llega el encabezado `X-Eval` que manda el eval.
+- Protégela con autenticación.
 
-Así no tocas el webhook de producción.
+Así no tocas la ruta de producción.
 
 ### 3.2 Que el agente devuelva lo que recuperó
 
-En el nodo **AI Agent** → *Options* → activa **Return Intermediate Steps**. La salida del nodo pasa a incluir `intermediateSteps`, con cada llamada a la herramienta de vector store y los fragmentos que devolvió (`observation`). `transform.js` los extrae aunque vengan como texto, como JSON en texto o como lista de `{ pageContent, metadata }`.
+Incluye en la respuesta los **pasos intermedios** del agente: cada llamada a la herramienta de búsqueda y los fragmentos que devolvió. Muchos frameworks de agentes ya lo hacen; por ejemplo, el formato `intermediateSteps` de LangChain (`return_intermediate_steps`), con la consulta en `action.toolInput` y los fragmentos en `observation`. `transform.js` los extrae aunque vengan como texto, como JSON en texto o como lista de `{ pageContent, metadata }`.
 
-Revisa una ejecución en n8n para confirmar la forma: depende de la versión de n8n y del tipo de nodo de vector store que uses.
+Revisa una respuesta real para confirmar la forma, porque depende del framework y de la herramienta de búsqueda que uses.
 
 ### 3.3 Que el agente diga explícitamente si puede responder
 
-En el AI Agent, activa **Require Specific Output Format** y conecta un **Structured Output Parser** con este esquema:
+Pide al modelo una **salida estructurada** con este esquema (JSON Schema, *structured outputs* o el parser de salida de tu framework):
 
 ```json
 {
@@ -109,9 +109,9 @@ Y en el prompt de sistema, una regla de este estilo:
 
 Si no puedes cambiar el formato de salida, `transform.js` infiere la decisión del texto buscando frases de escalamiento ("escalo", "segundo nivel", "no tengo información..."). Puedes ajustar esas frases con la variable `ESCALATION_REGEX`. Es menos confiable que el campo explícito.
 
-### 3.4 Qué debe responder el webhook
+### 3.4 Qué debe responder la ruta
 
-En el nodo **Respond to Webhook**, *Respond With: First Incoming Item*, conectado a la salida del AI Agent. Queda algo así:
+Algo así:
 
 ```json
 {
@@ -133,7 +133,7 @@ Si prefieres armar tu propio JSON, `transform.js` también acepta `{ "respuesta"
 
 ```bash
 cd promptfoo/helpdesk
-export N8N_WEBHOOK_URL=https://tu-n8n/webhook/helpdesk-eval
+export AGENT_WEBHOOK_URL=https://tu-servidor/webhook/helpdesk-eval
 export ANTHROPIC_API_KEY=...            # modelo juez (se puede cambiar en promptfooconfig.yaml)
 npx promptfoo@0.124.1 eval --no-cache -o resultados.json
 node diagnostico.js resultados.json      # resumen en consola + diagnostico.csv
@@ -142,7 +142,7 @@ npx promptfoo@0.124.1 view               # detalle por ticket: respuesta, fragme
 
 Ajusta en `promptfooconfig.yaml` el `body` a los campos que espera tu webhook (en el ejemplo, `mensaje`).
 
-Ejemplo de salida (con el webhook simulado `mock-n8n.js`):
+Ejemplo de salida (con el agente simulado `mock-agente.js`):
 
 ```
 Tickets evaluados: 7 (5 de primer nivel)
@@ -162,7 +162,7 @@ Por categoría (cubiertos / tickets N1):
 
 `diagnostico.csv` trae una fila por ticket con el diagnóstico, la acción sugerida, la respuesta del agente, la de referencia y los motivos del juez. Puedes importarlo a Sheets y repartir las brechas entre quienes mantienen los documentos.
 
-Para probarlo sin tu n8n: `node mock-n8n.js` en otra terminal y `N8N_WEBHOOK_URL=http://localhost:5678/webhook/helpdesk`.
+Para probarlo sin tu agente: `node mock-agente.js` en otra terminal y `AGENT_WEBHOOK_URL=http://localhost:5678/webhook/helpdesk`.
 
 ### Umbrales y repeticiones
 
@@ -181,19 +181,18 @@ En promptfoo, un ticket **pasa** si tomó la decisión correcta y, si era de N1,
 Un ticket marcado *Brecha de conocimiento* quiere decir que **lo que el agente recuperó** no tenía la respuesta. Para saber si el contenido existe:
 
 1. **Búsqueda manual:** busca los datos clave de `respuesta_referencia` en los documentos fuente. Es lo más rápido con pocas brechas.
-2. **Webhook de sonda:** un segundo workflow que, sin agente, consulta el vector store con el texto del ticket y devuelve los 20 primeros fragmentos. Si en esos 20 está la respuesta y en los del agente no, el problema es la recuperación: top-k muy bajo, chunks muy grandes o muy chicos, o el agente reformula mal la consulta. Si no está ni en los 20, falta el contenido.
+2. **Ruta de sonda:** un servicio pequeño que, sin agente, consulta el vector store con el texto del ticket y devuelve los 20 primeros fragmentos. Si en esos 20 está la respuesta y en los del agente no, el problema es la recuperación: top-k muy bajo, chunks muy grandes o muy chicos, o el agente reformula mal la consulta. Si no está ni en los 20, falta el contenido.
 3. Mira en `promptfoo view` la consulta que armó el agente (`toolInput` en los intermediate steps). Muchas veces el agente busca con palabras distintas a las de los documentos.
 
 ---
 
-## 6. Alternativa: evaluaciones nativas de n8n
+## 6. Lo mismo desde la plataforma
 
-Como el agente ya está en n8n, también puedes usar sus [evaluaciones](https://docs.n8n.io/integrations/builtin/core-nodes/n8n-nodes-base.evaluation/): un **Evaluation Trigger** que lee el Sheet de tickets, conectado al mismo AI Agent, y nodos **Evaluation** para *Set Outputs* y *Set Metrics*.
+La plataforma trae este caso como ejemplo (*Demo · ¿la base de conocimiento alcanza para N1?*), con las mismas piezas, sin línea de comandos:
+- Plantilla de agente **Agente con pasos intermedios**: respuesta en `output`, documentos en `intermediateSteps[*].observation`.
+- Comparaciones **Es igual a** sobre `output.puede_responder` (la decisión), **Correcta frente a lo esperado (IA)**, **Los documentos traen la respuesta (RAG)** y **Respaldada por los documentos (RAG)**.
 
-- **A favor:** todo queda en n8n, y *Check If Evaluating* evita los efectos secundarios sin tocar el webhook.
-- **En contra:** n8n no trae métricas de RAG (cobertura, fidelidad). Las tendrías que armar con nodos de LLM y prompts propios, y el diagnóstico por ticket también. *Correctness* (1–5 contra la referencia) sí viene incluida.
-
-Recomendación: usa el eval de este repo para la foto de cobertura de la base, que es tu pregunta. Si después quieres un chequeo rápido dentro de n8n cada vez que cambias el prompt, agrega la evaluación nativa con *Correctness* sobre el mismo Sheet.
+Sirve para que soporte o quien mantiene la base de conocimiento corra la evaluación desde el navegador.
 
 ---
 
@@ -209,5 +208,4 @@ Recomendación: usa el eval de este repo para la foto de cobertura de la base, q
 ## Fuentes
 
 - promptfoo — [Métricas con juez LLM (context-recall, context-faithfulness, contextTransform)](https://www.promptfoo.dev/docs/configuration/expected-outputs/model-graded/), [HTTP provider](https://www.promptfoo.dev/docs/providers/http/)
-- n8n — [Evaluation node](https://docs.n8n.io/integrations/builtin/core-nodes/n8n-nodes-base.evaluation/), [Métricas de evaluación](https://docs.n8n.io/build/integrate-ai/test-and-improve-ai-workflows/use-metrics-to-measure-quality)
 - Anthropic — [Demystifying evals for AI agents](https://www.anthropic.com/engineering/demystifying-evals-for-ai-agents)

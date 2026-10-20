@@ -2,7 +2,7 @@ namespace EvalPlatform.Domain;
 
 public static class AgentKinds
 {
-    // Cualquier cosa que responda por HTTP: webhook de n8n, endpoint propio, API de un modelo.
+    // Cualquier cosa que responda por HTTP: webhook, endpoint propio, API de un modelo.
     public const string Http = "http";
 
     // Servidor MCP: se llama una herramienta (tools/call) con los argumentos de cada caso.
@@ -10,6 +10,9 @@ public static class AgentKinds
 
     // Servidor MCP con un modelo: el modelo recibe las herramientas del MCP y decide cuál usar.
     public const string McpModel = "mcp_modelo";
+
+    // Tu propio código (cualquier lenguaje) ejecuta el agente y reporta las respuestas a la API de ejecutores.
+    public const string Code = "codigo";
 
     public static bool IsMcp(string? kind) => kind is McpDirect or McpModel;
 }
@@ -39,6 +42,9 @@ public sealed class Agent
     public string Name { get; set; } = "";
     public string Kind { get; set; } = AgentKinds.Http;
     public McpSettings Mcp { get; set; } = new();
+
+    // Grupo de ejecutores que llama al agente desde su red. Vacío = lo llama la plataforma.
+    public string? Executor { get; set; }
     public string Url { get; set; } = "";
     public string Method { get; set; } = "POST";
 
@@ -63,10 +69,12 @@ public sealed class Agent
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
 
     // Qué datos puede entregar este agente para las comparaciones.
-    public bool ProvidesTools => AgentKinds.IsMcp(Kind) || !string.IsNullOrWhiteSpace(ToolsPath);
-    public bool ProvidesToolArguments => AgentKinds.IsMcp(Kind) || !string.IsNullOrWhiteSpace(ToolArgumentsPath);
-    public bool ProvidesContext => Kind == AgentKinds.McpModel || (Kind == AgentKinds.Http && !string.IsNullOrWhiteSpace(ContextPath));
-    public bool ProvidesTokens => Kind == AgentKinds.McpModel || (Kind == AgentKinds.Http && !string.IsNullOrWhiteSpace(TokensPath));
+    // Con "código propio" se asume que tu código reporta lo que necesiten las comparaciones.
+    public bool ProvidesTools => Kind == AgentKinds.Code || AgentKinds.IsMcp(Kind) || !string.IsNullOrWhiteSpace(ToolsPath);
+    public bool ProvidesToolArguments => Kind == AgentKinds.Code || AgentKinds.IsMcp(Kind) || !string.IsNullOrWhiteSpace(ToolArgumentsPath);
+    public bool ProvidesContext => Kind is AgentKinds.Code or AgentKinds.McpModel || (Kind == AgentKinds.Http && !string.IsNullOrWhiteSpace(ContextPath));
+    public bool ProvidesTokens => Kind is AgentKinds.Code or AgentKinds.McpModel || (Kind == AgentKinds.Http && !string.IsNullOrWhiteSpace(TokensPath));
+    public bool RunsRemotely => Kind == AgentKinds.Code || !string.IsNullOrWhiteSpace(Executor);
 }
 
 // Una llamada a herramienta: nombre y argumentos en JSON.
@@ -139,6 +147,9 @@ public sealed class Run
     public string AgentName { get; set; } = "";
     public string DatasetName { get; set; } = "";
 
+    // Grupo de ejecutores que atiende esta corrida (null = la plataforma).
+    public string? Executor { get; set; }
+
     // Qué cambió antes de esta corrida (prompt, modelo, temperatura…), para comparar el antes y el después.
     public string? Note { get; set; }
 
@@ -194,4 +205,23 @@ public sealed class CheckResult
     public string? Display { get; set; }
     public string? Expected { get; set; }
     public string Reason { get; set; } = "";
+}
+
+public enum RunTaskState { Pending, Claimed, Done, Cancelled }
+
+// Un caso de una corrida que ejecuta un ejecutor remoto. Se reparte con un "préstamo":
+// si el ejecutor no responde antes de LeaseUntil, el caso vuelve a estar disponible.
+public sealed class RunTask
+{
+    public long Id { get; set; }
+    public int RunId { get; set; }
+    public string Group { get; set; } = "";
+    public int RowIndex { get; set; }
+    public int Attempt { get; set; } = 1;
+    public string Input { get; set; } = "";
+    public Dictionary<string, string> Row { get; set; } = [];
+    public RunTaskState State { get; set; } = RunTaskState.Pending;
+    public string? Worker { get; set; }
+    public int Deliveries { get; set; }
+    public DateTimeOffset? LeaseUntil { get; set; }
 }

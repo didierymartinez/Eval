@@ -1,9 +1,9 @@
-// Webhook de mentira que imita la respuesta de un workflow de n8n con AI Agent + vector store,
-// para probar el eval sin tu n8n. Base de conocimiento mínima y búsqueda por palabras.
+// Webhook de mentira que imita a un agente con RAG que devuelve sus pasos intermedios,
+// para probar el eval sin tu agente. Base de conocimiento mínima y búsqueda por palabras.
 // A la base le falta a propósito cómo crear usuarios (HD-005) y tiene datos de empresa
 // que hacen que el agente responda un caso que debía escalar (HD-006).
 //
-// Uso: node mock-n8n.js   ->  N8N_WEBHOOK_URL=http://localhost:5678/webhook/helpdesk
+// Uso: node mock-agente.js   ->  AGENT_WEBHOOK_URL=http://localhost:5678/webhook/helpdesk
 
 const http = require('http');
 
@@ -66,4 +66,4 @@ http
       res.end(JSON.stringify(agente(mensaje)));
     });
   })
-  .listen(port, () => console.log(`Mock n8n en http://localhost:${port}/webhook/helpdesk`));
+  .listen(port, () => console.log(`Agente simulado en http://localhost:${port}/webhook/helpdesk`));

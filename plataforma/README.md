@@ -1,35 +1,24 @@
 # Plataforma de evaluaciones
 
-Aplicación web para comprobar, con casos reales, si un agente o un prompt responde lo que se espera. Funciona como las evaluaciones de n8n, pero con cualquier agente que responda por HTTP:
+Aplicación web para comprobar, con casos reales, si un agente o un prompt responde lo que se espera. Le pasas casos de prueba (entrada y lo esperado), se ejecuta el agente con cada uno y se compara su respuesta con lo esperado:
 
-1. **Agente**: dónde está (URL) y cómo se le habla. Sirve un webhook de n8n, un endpoint propio en C# u otro lenguaje, la API de un modelo (para evaluar un prompt directamente) o un **servidor MCP** por HTTP.
+1. **Agente**: dónde está y cómo se le habla. Puede ser:
+   - un endpoint o webhook propio, en C# u otro lenguaje;
+   - la API de un modelo, para evaluar un prompt directamente;
+   - un **servidor MCP** por HTTP;
+   - **tu propio código** en la red del agente, para agentes en redes privadas o que no se exponen por HTTP.
 2. **Casos de prueba**: un Excel, un CSV o un Google Sheet con la entrada de cada caso y lo que se espera.
 3. **Evaluación**: qué se compara en cada respuesta (que contenga algo, que sea correcta según un juez IA, que use los documentos del RAG, etc.).
 4. **Resultados**: qué casos pasaron, cuáles fallaron y por qué, comparación con la corrida anterior y descarga en Excel.
 
 La interfaz está en español y pensada para que soporte, negocio o QA puedan cargar casos y ejecutar evaluaciones sin tocar código.
 
-### Del flujo de n8n Evaluations a la plataforma
+### El ciclo de trabajo
 
-El ciclo es el mismo que se ve en tutoriales como [Evaluate N8N AI Agents & RAG like a PRO](https://youtu.be/tn0C1VlkkQ4): dataset en Sheets → correr el agente por cada fila → métricas → mejorar el prompt → volver a correr y comparar.
-
-| En n8n | En la plataforma |
-|---|---|
-| Evaluation Trigger leyendo un Google Sheet | **Casos de prueba** desde Google Sheets, Excel o CSV |
-| Dataset generado con Claude/ChatGPT | **Casos de prueba → Generar con IA** (borrador para revisar) |
-| AI Agent con *Return Intermediate Steps* | **Agente** con plantilla de n8n: respuesta, documentos y herramientas |
-| Check If Evaluating | Encabezado `X-Eval: 1` que manda la plantilla, para que un nodo IF salte las acciones reales |
-| Set Outputs (escribe en el Sheet) | Detalle por caso en pantalla y **Descargar Excel** |
-| Métrica Correctness | Correcta frente a lo esperado (IA), con explicación |
-| Métrica Helpfulness | Responde lo que se preguntó (IA) |
-| Métrica String similarity | Se parece a (texto) |
-| Métrica Categorization | Es igual a |
-| Métrica Tools used | Usó las herramientas / Usó las herramientas en orden |
-| Tokens en la pestaña Evaluations | Consume pocos tokens y tokens promedio por corrida |
-| Comparar la corrida antes y después del cambio de prompt | Nota **Qué cambiaste**, historial con gráfica y "Cambios frente a la corrida anterior" |
-| — | Comparaciones de RAG: *respaldada por los documentos* y *los documentos traen la respuesta* |
-
-Diferencias: no hace falta n8n (sirve para agentes en C# u otro lenguaje, y para prompts sueltos), y no hay límite de workflows. En n8n las evaluaciones con métricas son de los planes Pro y Enterprise; en Community y Starter registrados se pueden usar en un solo workflow ([docs](https://docs.n8n.io/build/integrate-ai/test-and-improve-ai-workflows/use-metrics-to-measure-quality)).
+1. Arma los casos: desde Google Sheets, Excel o CSV, o un borrador con **Generar con IA**.
+2. Ejecuta el agente con cada caso y mira las comparaciones de cada uno.
+3. Mejora el prompt, el modelo, las herramientas o los documentos.
+4. Vuelve a ejecutar con una nota de **qué cambiaste** y compara con la corrida anterior.
 
 ## Arrancar
 
@@ -40,7 +29,7 @@ cd plataforma
 dotnet run --project EvalPlatform
 ```
 
-Abre http://localhost:5080. La primera vez se crea un ejemplo listo para ejecutar: un agente de helpdesk simulado (responde como un workflow de n8n con RAG), 7 tickets y una evaluación. En la pantalla de inicio, **Ejecutar el ejemplo**.
+Abre http://localhost:5080. La primera vez se crea un ejemplo listo para ejecutar: un agente de helpdesk simulado (con RAG, devuelve sus pasos intermedios), 7 tickets y una evaluación, además de los ejemplos de MCP. En la pantalla de inicio, **Ejecutar el ejemplo**.
 
 Los datos se guardan en `EvalPlatform/datos/eval.db` (SQLite). Para empezar de cero, borra esa carpeta.
 
@@ -78,27 +67,26 @@ En **Agentes → Nuevo agente** hay plantillas para los casos comunes:
 
 | Plantilla | Cuerpo | Respuesta | Documentos (RAG) | Herramientas |
 |---|---|---|---|---|
-| Webhook de n8n (AI Agent) | `{ "mensaje": "{{input}}" }` | `output` | `intermediateSteps[*].observation` | `intermediateSteps[*].action.tool` |
+| Agente con pasos intermedios (webhook) | `{ "mensaje": "{{input}}" }` | `output` | `intermediateSteps[*].observation` | `intermediateSteps[*].action.tool` |
 | Endpoint propio (`/eval/run`) | `{ "input": "{{input}}" }` | `output` | — | `toolCalls[*].name` |
 | Prompt directo (API OpenAI) | `messages` con tu prompt de sistema | `choices[0].message.content` | — | `choices[0].message.tool_calls[*].function.name` |
 | Prompt directo (API Anthropic) | `system` + `messages` | `content[*].text` | — | `content[*].name` |
 
-Ruta de argumentos de herramientas en cada plantilla: `intermediateSteps[*].action.toolInput` (n8n), `toolCalls[*].arguments` (endpoint propio), `choices[0].message.tool_calls[*].function.arguments` (OpenAI) y `content[*].input` (Anthropic).
+Ruta de argumentos de herramientas en cada plantilla: `intermediateSteps[*].action.toolInput` (pasos intermedios), `toolCalls[*].arguments` (endpoint propio), `choices[0].message.tool_calls[*].function.arguments` (OpenAI) y `content[*].input` (Anthropic).
 
-Ruta de tokens en cada plantilla: `usage.inputTokens, usage.outputTokens` (endpoint propio), `usage.total_tokens` (OpenAI) y `usage.input_tokens, usage.output_tokens` (Anthropic); varias rutas separadas por coma se suman. El webhook de n8n no devuelve tokens a menos que el workflow los agregue a la respuesta.
+Ruta de tokens en cada plantilla: `usage.inputTokens, usage.outputTokens` (endpoint propio), `usage.total_tokens` (OpenAI) y `usage.input_tokens, usage.output_tokens` (Anthropic); varias rutas separadas por coma se suman. Un agente con pasos intermedios no suele devolver tokens; agrégalos a su respuesta si quieres medirlos.
 
 - **Marcadores:** `{{input}}` es la columna de entrada del caso; `{{cualquier_columna}}` trae otra columna; `{{env:NOMBRE}}` lee una variable de entorno del servidor, para no guardar claves en la base de datos.
-- **Rutas:** `a.b` entra en propiedades, `lista[0]` toma un elemento y `lista[*]` todos. Si un valor es texto con JSON adentro (n8n lo hace a menudo), se interpreta solo. Si la respuesta es una lista, las propiedades se aplican a cada elemento.
+- **Rutas:** `a.b` entra en propiedades, `lista[0]` toma un elemento y `lista[*]` todos. Si un valor es texto con JSON adentro (muchos orquestadores de agentes lo hacen), se interpreta solo. Si la respuesta es una lista, las propiedades se aplican a cada elemento.
 - **Probar:** antes de guardar, escribe una entrada de ejemplo y pulsa **Probar**. Se ve lo que se envió, la respuesta completa y qué se extrajo con cada ruta.
 
-### n8n
+### Agente con pasos intermedios
 
-En el workflow:
+Es el formato de muchos frameworks de agentes con herramientas, por ejemplo `intermediateSteps` en LangChain: `{ "output": ..., "intermediateSteps": [{ "action": { "tool", "toolInput" }, "observation" }] }`. Para evaluarlo bien:
 
-1. El **Webhook** debe esperar la respuesta (*Respond: Using 'Respond to Webhook' Node* o *When Last Node Finishes*) y terminar en **Respond to Webhook** con la salida del AI Agent.
-2. En el **AI Agent**, activa *Return Intermediate Steps* para ver documentos y herramientas.
-3. Si el agente debe decidir entre responder o escalar, conecta un **Structured Output Parser** con un campo `puede_responder` (booleano). En la evaluación, compáralo con **Es igual a** usando *Comparar otro campo de la respuesta* = `output.puede_responder`.
-4. Las ramas que hacen cosas reales (responder al cliente, crear tickets, enviar correos) no deberían correr durante una evaluación. La plantilla manda el encabezado `X-Eval: 1` para que un nodo **IF** las salte. Otra opción es un segundo webhook solo para evaluaciones.
+1. La ruta debe **esperar la respuesta del agente** y devolverla en la misma llamada, con los pasos intermedios.
+2. Si el agente debe decidir entre responder o escalar, pídele una salida estructurada con un campo `puede_responder` (booleano). En la evaluación, compáralo con **Es igual a** usando *Comparar otro campo de la respuesta* = `output.puede_responder`.
+3. Las acciones reales (responder al cliente, crear tickets, enviar correos) no deberían ejecutarse durante una evaluación. La plantilla manda el encabezado `X-Eval: 1` para que el agente las salte. Otra opción es una ruta aparte solo para evaluaciones.
 
 Más detalle del caso helpdesk con RAG en [`../docs/evaluar-rag-helpdesk.md`](../docs/evaluar-rag-helpdesk.md).
 
@@ -150,7 +138,7 @@ El ciclo: corre la evaluación, mira qué casos eligen mal, mejora la descripci�
 
 ### Llamó con estos argumentos
 
-Esta comparación también sirve para agentes HTTP: n8n, endpoint propio, OpenAI o Anthropic, configurando *Dónde vienen sus argumentos*. Las plantillas ya lo traen. Formato de lo esperado, una llamada por línea:
+Esta comparación también sirve para agentes HTTP (pasos intermedios, endpoint propio, OpenAI o Anthropic) configurando *Dónde vienen sus argumentos* (las plantillas ya lo traen), y para tu propio código, que manda `arguments` en cada llamada de `toolCalls`. Formato de lo esperado, una llamada por línea:
 
 ```
 consultar_cartera {"cliente": "123"}       ← esa herramienta, con al menos esos argumentos
@@ -169,6 +157,98 @@ En **Generar con IA**, la lista *Traer las herramientas de un servidor MCP* llen
 La plataforma trae un servidor MCP de demostración en `/demo/mcp`, con las herramientas `consultar_cartera`, `buscar_cliente` y `crear_ticket`, y dos evaluaciones:
 - **Demo · MCP: ¿las herramientas responden bien?** Llamada directa. Encuentra un error real que dejé a propósito: `buscar_cliente` distingue mayúsculas.
 - **Demo · MCP: ¿el modelo elige bien las herramientas?** Modelo + MCP. Necesita el juez IA configurado, porque usa ese mismo modelo.
+
+## Agentes en redes privadas u otras tecnologías
+
+Muchas veces el agente no es alcanzable desde la plataforma. Puede vivir en un microservicio dentro de una red privada, o no hablar HTTP: gRPC, una cola de mensajes, una librería dentro de otro servicio, un proceso por consola. Para eso se separa quién **ejecuta** al agente de quién **califica**:
+
+```
+  Red de la plataforma                         Red privada del agente
+ ┌────────────────────────┐                 ┌───────────────────────────────────┐
+ │ Plataforma             │  1. pide casos  │ Ejecutor                          │
+ │  casos, comparaciones, │ ◀────────────── │  (genérico o tu propio código)    │
+ │  juez IA, resultados   │  3. respuestas  │          │ 2. llama al agente     │
+ │                        │ ◀────────────── │          ▼    (HTTP, MCP, gRPC,   │
+ └────────────────────────┘                 │   Agente / microservicio  colas…) │
+                                            └───────────────────────────────────┘
+```
+
+- El ejecutor **solo hace conexiones salientes** (HTTPS) hacia la plataforma: no hay que abrir puertos en la red del agente.
+- Los **secretos se quedan en esa red**: los `{{env:NOMBRE}}` de los agentes se leen en el ejecutor, no en la plataforma.
+- La plataforma sigue haciendo todo lo demás: guarda los casos, califica (incluido el juez IA) y muestra los resultados.
+- Los casos esperan en la base hasta que un ejecutor los tome. Si un ejecutor se cae a mitad de un caso, el caso vuelve a repartirse cuando vence su tiempo máximo más 60 segundos. Puede haber varios ejecutores del mismo grupo trabajando en paralelo.
+
+### 1. Activar la API de ejecutores
+
+En la plataforma, define un token (los ejecutores lo envían en el encabezado `X-Ejecutor-Token`):
+
+```bash
+export Ejecutores__Token="un-valor-largo-y-secreto"
+```
+
+Sin token configurado, la API de ejecutores está apagada.
+
+### 2a. Agentes HTTP o MCP en otra red: el ejecutor genérico
+
+En el agente, en **¿Desde dónde se llama al agente?**, elige *Desde un ejecutor dentro de la red del agente* y escribe un **grupo** (por ejemplo `red-finanzas`). En una máquina o contenedor de esa red, corre el mismo programa de la plataforma en modo ejecutor:
+
+```bash
+export EVAL_EJECUTOR_TOKEN="un-valor-largo-y-secreto"
+dotnet EvalPlatform.dll ejecutor --plataforma https://evaluaciones.miempresa --grupo red-finanzas [--nombre srv-01] [--concurrencia 2]
+
+# o con Docker (la misma imagen de la plataforma):
+docker run -d -e EVAL_EJECUTOR_TOKEN=... evaluaciones ejecutor --plataforma https://evaluaciones.miempresa --grupo red-finanzas
+```
+
+Funciona con los tipos HTTP, *Servidor MCP: llamar herramientas* y *Servidor MCP con un modelo*.
+
+### 2b. Cualquier tecnología: tu propio código
+
+Crea el agente con el tipo **Tu propio código** y un grupo. Tu código, en la tecnología y la red del agente, hace un ciclo con dos llamadas:
+
+```http
+POST /api/ejecutores/tomar
+X-Ejecutor-Token: ...
+Content-Type: application/json
+
+{ "group": "red-finanzas", "worker": "servicio-cobranza-01", "max": 1, "waitSeconds": 20 }
+```
+
+Devuelve una lista de casos (vacía si no hay; espera hasta `waitSeconds` antes de responder):
+
+```json
+[{ "taskId": 15, "runId": 3, "caseNumber": 1, "attempt": 1,
+   "input": "¿Cuánto debe el cliente 123?", "row": { "input": "...", "respuesta_esperada": "..." }, "agent": { ... } }]
+```
+
+Llama a tu agente con `input` (o con cualquier columna de `row`) y devuelve lo que respondió:
+
+```http
+POST /api/ejecutores/resultado
+X-Ejecutor-Token: ...
+Content-Type: application/json
+
+{ "taskId": 15,
+  "output": "El cliente 123 debe $1.200.000.",
+  "toolCalls": [{ "name": "consultar_cartera", "arguments": { "cliente": "123" }, "result": "..." }],
+  "context": ["documento recuperado 1"],
+  "tokens": 180,
+  "latencyMs": 950,
+  "raw": "{ ...respuesta completa en JSON, para 'Comparar otro campo de la respuesta'... }" }
+```
+
+Solo `taskId` y `output` son obligatorios. Si el agente falló, manda `"error": "mensaje"` y el caso queda como *Error*. La respuesta trae cómo quedó el caso (`Passed`, `Failed` o `Error`) y las comparaciones.
+
+Hay un ejecutor de ejemplo en **Python sin dependencias** en [`ejecutores/python/ejecutor.py`](ejecutores/python/ejecutor.py): solo cambias la función `ejecutar_agente()` por la llamada a tu agente. En cualquier otro lenguaje (Java, Go, Node, C#…) son las mismas dos llamadas HTTP.
+
+### Cuándo usar cada opción
+
+| Situación | Opción |
+|---|---|
+| El agente expone HTTP o MCP y la plataforma lo alcanza | Agente normal: lo llama la plataforma |
+| El agente expone HTTP o MCP pero solo dentro de su red | Ejecutor genérico en esa red |
+| El agente no expone HTTP (gRPC, colas, librería, consola) o necesitas preparar datos antes de cada caso | Tu propio código |
+| Una sola red para todo | También puedes desplegar la plataforma dentro de esa red (ver *Publicar*) |
 
 ## Casos de prueba
 
@@ -196,14 +276,14 @@ Si la celda de lo esperado está vacía en un caso, esa comparación se **omite*
 |---|---|---|
 | Es igual a | Coincide con lo esperado, sin mayúsculas, tildes ni espacios; `sí`/`true`/`1` son lo mismo | No |
 | Contiene / No contiene | Todos los textos (separados por `\|`) aparecen, o ninguno | No |
-| Se parece a | Similitud letra por letra de 0 a 1 (como *String similarity* de n8n) | No |
+| Se parece a | Similitud letra por letra de 0 a 1 (distancia de edición) | No |
 | Cumple un patrón | Expresión regular | No |
 | Usó las herramientas | Llamó las herramientas esperadas, sin importar el orden; `ninguna` = no debía llamar herramientas | No |
 | Usó las herramientas en orden | Las herramientas esperadas aparecen en ese orden (puede haber otras en medio) | No |
 | Llamó con estos argumentos | La herramienta se llamó con esos argumentos (ver [Servidores MCP](#llamó-con-estos-argumentos)) | No |
 | Consume pocos tokens | Tokens máximos por caso (requiere la ruta de tokens en el agente) | No |
 | Responde a tiempo | Latencia máxima en milisegundos | No |
-| Correcta frente a lo esperado | Mismo significado que la respuesta de referencia (como *Correctness* de n8n), de 1 a 5, con explicación | Sí |
+| Correcta frente a lo esperado | Mismo significado que la respuesta de referencia, de 1 a 5, con explicación | Sí |
 | Responde lo que se preguntó | Relevancia frente a la entrada, de 1 a 5 | Sí |
 | Cumple un criterio | Un criterio escrito en palabras, por caso o igual para todos | Sí |
 | Respaldada por los documentos (RAG) | Lo que respondió está en los documentos recuperados (detecta respuestas inventadas) | Sí |
@@ -228,7 +308,8 @@ Con **Repeticiones por caso** mayor que 1, cada caso se corre varias veces y el 
 |---|---|---|
 | `ConnectionStrings:Eval` | `Data Source=datos/eval.db` | Ruta de la base SQLite |
 | `Juez:Endpoint`, `Juez:ApiKey`, `Juez:Model` | vacío | Modelo juez (ver arriba) |
-| `Corridas:MaxConcurrency` | `3` | Casos en paralelo por corrida. Bájalo si el agente o n8n se saturan |
+| `Corridas:MaxConcurrency` | `3` | Casos en paralelo por corrida (cuando llama la plataforma). Bájalo si el agente se satura |
+| `Ejecutores:Token` | vacío | Token que deben enviar los ejecutores remotos. Vacío = API de ejecutores apagada |
 | `Demo:Habilitado` | `true` | Expone el agente simulado en `/demo/helpdesk` y el servidor MCP de demostración en `/demo/mcp` |
 | `Demo:CrearEjemplo` | `true` | Crea el ejemplo si la base está vacía |
 
@@ -238,7 +319,8 @@ En variables de entorno, el `:` se escribe `__` (por ejemplo, `Corridas__MaxConc
 
 - **No tiene inicio de sesión.** Úsala en una red interna, o detrás de un proxy con autenticación (por ejemplo Azure App Service con Entra ID o un reverse proxy con SSO).
 - La plataforma hace llamadas HTTP a las URLs que se configuren en los agentes. Quien pueda crear agentes puede hacer que el servidor llame a cualquier dirección a la que tenga acceso.
-- Las claves van en variables de entorno (`{{env:NOMBRE}}`), no en los encabezados guardados.
+- Las claves van en variables de entorno (`{{env:NOMBRE}}`), no en los encabezados guardados. Con ejecutores remotos se leen en el ejecutor.
+- La API de ejecutores usa un token compartido (`Ejecutores__Token`). Los ejecutores reciben la configuración del agente (URL, encabezados con sus `{{env:…}}`, cuerpo), no los valores de los secretos.
 - Para producción: `Demo__Habilitado=false`.
 
 ## Publicar en un servidor
@@ -250,11 +332,20 @@ cd publicado && ASPNETCORE_URLS=http://0.0.0.0:5080 ./EvalPlatform
 
 La carpeta `datos/` con la base SQLite queda junto al ejecutable. Si la publicas en un servicio en la nube, apunta `ConnectionStrings__Eval` a un disco persistente.
 
+Con Docker (desde la raíz del repositorio):
+
+```bash
+docker build -f plataforma/Dockerfile -t evaluaciones .
+docker run -d -p 5080:8080 -v eval-datos:/datos -e Ejecutores__Token=... -e Demo__Habilitado=false evaluaciones
+```
+
+La misma imagen sirve como ejecutor remoto (`evaluaciones ejecutor --plataforma ... --grupo ...`).
+
 ## Desarrollo
 
 ```bash
-dotnet test        # 44 pruebas: rutas JSON, plantillas, importación, comparaciones, juez, generación de casos,
-                   # migración de la base, MCP (directo y con modelo) y flujo completo por API
+dotnet test        # 51 pruebas: rutas JSON, plantillas, importación, comparaciones, juez, generación de casos,
+                   # migración de la base, MCP (directo y con modelo), ejecutores remotos y flujo completo por API
 ```
 
 Estructura:
@@ -263,8 +354,10 @@ Estructura:
 |---|---|
 | `EvalPlatform/Domain/` | Modelo (agente, dataset, evaluación, corrida, resultados) y catálogo de comparaciones |
 | `EvalPlatform/Services/` | Llamada al agente, rutas JSON, importación de casos, comparaciones, juez, cola de corridas, Excel, demo |
-| `EvalPlatform/Api/` | API REST que usa la interfaz (`/api/...`) |
+| `EvalPlatform/Api/` | API REST que usa la interfaz (`/api/...`) y API de ejecutores (`/api/ejecutores/...`) |
 | `EvalPlatform/wwwroot/` | Interfaz web (HTML + JavaScript sin dependencias) |
 | `EvalPlatform.Tests/` | Pruebas unitarias y de integración |
+| `ejecutores/python/` | Ejecutor de ejemplo para tu propio código |
+| `Dockerfile` | Imagen de la plataforma (y del ejecutor) |
 
 Para agregar una comparación nueva: súmala al catálogo en `Domain/CheckTypes.cs` e impleméntala en `Services/CheckRunner.cs`. La interfaz la muestra sola.

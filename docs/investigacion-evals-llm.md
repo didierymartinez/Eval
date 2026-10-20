@@ -2,16 +2,16 @@
 
 Investigación y plan para evaluar si un prompt o un agente (en C# u otro lenguaje) hace lo que debe. Fecha: octubre de 2026.
 
-> Para el caso concreto de un agente de helpdesk con RAG detrás de un webhook de n8n, ver [evaluar-rag-helpdesk.md](evaluar-rag-helpdesk.md).
+> Para el caso concreto de un agente de helpdesk con RAG detrás de un webhook, ver [evaluar-rag-helpdesk.md](evaluar-rag-helpdesk.md).
 
 ---
 
 ## 1. Respuesta corta
 
-- **Lo que viste en n8n tiene nombre: evaluación offline sobre un dataset.** Tienes una tabla de casos (entrada + lo esperado), un arnés que corre el agente por cada fila y unos *graders* (evaluadores) que comparan el resultado con lo esperado y le ponen un puntaje. n8n lo hace con Google Sheets; lo mismo se puede hacer sin n8n.
+- **Lo que buscas tiene nombre: evaluación offline sobre un dataset.** Tienes una tabla de casos (entrada + lo esperado), un arnés que corre el agente por cada fila y unos *graders* (evaluadores) que comparan el resultado con lo esperado y le ponen un puntaje. La tabla puede ser un Google Sheet, un Excel o un CSV.
 - **Para tu caso (agente en C#), lo más directo es exponer un endpoint HTTP de evaluación** en tu agente (`POST /eval/run`) que devuelva la respuesta final **y las herramientas que llamó**. Con eso cualquier arnés lo puede probar por URL, sin importar el lenguaje.
 - **Dos arneses recomendados**, y los dos están armados y probados en este repo:
-  1. **promptfoo** (CLI open source): lee el dataset desde CSV **o directamente desde Google Sheets**, llama tu URL, aplica chequeos y un juez LLM, y puede **escribir los resultados de vuelta en Sheets**. Es lo más parecido a n8n sin depender de n8n.
+  1. **promptfoo** (CLI open source): lee el dataset desde CSV **o directamente desde Google Sheets**, llama tu URL, aplica chequeos y un juez LLM, y puede **escribir los resultados de vuelta en Sheets**.
   2. **Microsoft.Extensions.AI.Evaluation** (librerías oficiales de .NET): los evals quedan como tests de xUnit/MSTest en tu solución, con caché de respuestas del juez y un reporte HTML (`dotnet aieval report`). Sirve para tenerlo dentro del CI de .NET.
 - **Empieza chico:** de 20 a 50 casos sacados de fallos reales, con chequeos deterministas donde se pueda y juez LLM solo donde haga falta. Lee las salidas, no solo los puntajes.
 
@@ -36,28 +36,20 @@ Distinciones que cambian cómo usas los resultados:
 
 ---
 
-## 3. Qué hace exactamente n8n
+## 3. Métricas típicas de una evaluación sobre un dataset
 
-n8n tiene dos nodos para esto ([docs](https://docs.n8n.io/integrations/builtin/core-nodes/n8n-nodes-base.evaluation/)):
+Casi todas las herramientas de evaluación traen un conjunto parecido de métricas básicas:
 
-1. **Evaluation Trigger**: lee las filas de una hoja de Google Sheets (o una data table de n8n) y ejecuta el workflow una vez por fila.
-2. **Evaluation node**, con tres operaciones:
-   - **Set Outputs**: escribe la salida del workflow en columnas de la misma hoja.
-   - **Set Metrics**: registra métricas numéricas en la pestaña *Evaluations*.
-   - **Check If Evaluating**: bifurca el flujo si la ejecución es una evaluación (por ejemplo, para no mandar correos reales).
-
-Métricas que trae ([docs](https://docs.n8n.io/build/integrate-ai/test-and-improve-ai-workflows/use-metrics-to-measure-quality)):
-
-| Métrica n8n | Tipo | Equivalente aquí |
+| Métrica | Tipo | En este repo |
 |---|---|---|
-| Correctness (1–5) | Juez LLM contra respuesta de referencia | `llm-rubric` / `RubricEvaluator`, `EquivalenceEvaluator` |
-| Helpfulness (1–5) | Juez LLM: ¿responde la pregunta? | `RelevanceEvaluator` |
-| String similarity (0–1) | Distancia de edición | `similar` / `levenshtein` en promptfoo, `F1Evaluator`/`BLEUEvaluator` en .NET |
-| Categorization (0/1) | Coincidencia exacta | `equals` en promptfoo |
-| Tools used (0–1) | ¿Usó las herramientas esperadas? | columna `expected_tools` |
-| Custom | Lo que calcules | Assertions JS/Python o `IEvaluator` propio |
+| Corrección frente a una respuesta de referencia (1–5) | Juez LLM | `llm-rubric` / `RubricEvaluator`; en la plataforma, *Correcta frente a lo esperado (IA)* |
+| Utilidad o relevancia: ¿responde la pregunta? (1–5) | Juez LLM | `RelevanceEvaluator`; *Responde lo que se preguntó (IA)* |
+| Similitud de texto (0–1) | Distancia de edición | `similar` / `levenshtein` en promptfoo; *Se parece a (texto)* |
+| Categorización (0/1) | Coincidencia exacta | `equals` en promptfoo; *Es igual a* |
+| Herramientas usadas | ¿Llamó las herramientas esperadas? | columna `expected_tools`; *Usó las herramientas* |
+| Personalizada | Lo que calcules | Assertions JS/Python o `IEvaluator` propio |
 
-**Limitación para tu caso:** n8n evalúa *workflows de n8n*. Si tu agente vive en C#, tendrías que envolverlo en un workflow que lo llame con un nodo HTTP Request. Funciona, pero terminas manteniendo n8n solo para correr evals. Las opciones de abajo hacen lo mismo directo contra tu código.
+Lo importante es que la evaluación vaya contra tu código directamente, sin envolver el agente en otra herramienta solo para poder evaluarlo.
 
 ---
 
@@ -99,7 +91,6 @@ Regla práctica: **determinista donde se pueda, juez LLM donde haga falta, human
 | **[DeepEval](https://deepeval.com/)** | Librería Python estilo pytest, 50+ métricas | Python | Lo que programes | Lo que programes | Si tu equipo prefiere Python o quieres métricas de RAG listas |
 | **[Langfuse](https://langfuse.com/)** | Plataforma open source de trazas, datasets y experimentos | SDKs + OpenTelemetry | Vía SDK | Importación | Observabilidad en producción y evals online. Self-host (útil por datos sensibles) |
 | **Braintrust, LangSmith, Arize Phoenix** | Plataformas de evals y trazas (SaaS / open core) | SDKs | Vía SDK | Importación | Cuando un equipo grande necesita UI compartida, curación de datasets y comparación de experimentos |
-| **n8n Evaluations** | Nodos dentro de n8n | n8n | Con nodo HTTP | Sí | Si el agente ya es un workflow de n8n |
 
 Un patrón común en 2026: una herramienta liviana (promptfoo o DeepEval) como *gate* de CI en cada PR, y una plataforma de trazas (Langfuse, Braintrust) para producción y para alimentar el dataset con casos reales. Ojo: casi todas las comparativas que circulan las publica algún proveedor; tómalas como punto de partida.
 
@@ -131,7 +122,7 @@ Content-Type: application/json
 }
 ```
 
-- **A favor:** sirve para cualquier arnés (promptfoo, el runner .NET, n8n, Postman) y prueba el agente tal como corre de verdad: prompt, configuración, herramientas.
+- **A favor:** sirve para cualquier arnés (promptfoo, el runner .NET, la plataforma, Postman) y prueba el agente tal como corre de verdad: prompt, configuración, herramientas.
 - **En contra:** hay que proteger el endpoint (solo en ambientes no productivos, con API key) y las herramientas con efectos reales necesitan un ambiente de prueba.
 
 **Cómo capturar las herramientas que llamó el agente** (lo que más se suele olvidar):
@@ -149,13 +140,13 @@ El proyecto de tests referencia tu librería del agente y lo invoca directo (sin
 
 Instrumentas el agente con OpenTelemetry (MEAI y Semantic Kernel ya emiten spans con las convenciones GenAI) y mandas las trazas a Langfuse, Phoenix u otra plataforma. Ahí calificas conversaciones reales y conviertes las malas en casos nuevos del dataset. No reemplaza a A o B; las complementa.
 
-### Opción D — n8n como orquestador
+### Opción D — Un ejecutor dentro de la red del agente
 
-El Evaluation Trigger lee el Sheet → nodo HTTP Request llama tu `/eval/run` → Set Outputs/Set Metrics. Sirve si el equipo ya vive en n8n, pero los chequeos de herramientas y las rúbricas quedan dispersos en nodos y es más difícil meterlo en CI.
+Si el agente solo es alcanzable dentro de una red privada, o no se expone por HTTP (gRPC, colas, una librería, un proceso por consola), un **ejecutor** dentro de esa red pide los casos a la plataforma, llama al agente localmente y devuelve las respuestas. Solo hace conexiones salientes. Puede ser el ejecutor genérico de la plataforma (para agentes HTTP o MCP) o unas líneas en la tecnología del equipo. Detalle en [`plataforma/README.md`](../plataforma/README.md#agentes-en-redes-privadas-u-otras-tecnologías).
 
 ### Cuidados al conectar
 
-- **Efectos secundarios:** si una herramienta envía correos, cobra o escribe en producción, en modo evaluación debe apuntar a un sandbox o a un mock. (n8n tiene *Check If Evaluating* justamente por esto.) Puedes pasar un flag en `context` y que tu DI cambie las implementaciones.
+- **Efectos secundarios:** si una herramienta envía correos, cobra o escribe en producción, en modo evaluación debe apuntar a un sandbox o a un mock. Puedes pasar un flag en `context` y que tu DI cambie las implementaciones.
 - **Datos fijos:** los casos que consultan "el pedido 12345" necesitan que ese pedido exista en el ambiente de prueba con datos estables, o las respuestas cambian entre corridas por razones que no son del agente.
 - **Versión bajo prueba:** devuelve en la respuesta (o en un header) la versión del prompt y del modelo, para saber exactamente qué se evaluó.
 - **Multi-turno:** si el agente mantiene conversación, usa `sessionId`. promptfoo soporta sesiones en el provider HTTP (`sessionParser` o un `sessionId` generado por caso).
@@ -257,7 +248,6 @@ promptfoo termina con código distinto de cero si hay casos fallidos, así que e
 ## 10. Fuentes
 
 - Anthropic — [Demystifying evals for AI agents](https://www.anthropic.com/engineering/demystifying-evals-for-ai-agents) (conceptos, tipos de grader, pass@k / pass^k, cómo empezar)
-- n8n — [Evaluation node](https://docs.n8n.io/integrations/builtin/core-nodes/n8n-nodes-base.evaluation/), [Evaluation Trigger](https://docs.n8n.io/integrations/builtin/core-nodes/n8n-nodes-base.evaluationtrigger/), [Light evaluations](https://docs.n8n.io/build/integrate-ai/test-and-improve-ai-workflows/run-quick-evaluations.md), [Metrics](https://docs.n8n.io/build/integrate-ai/test-and-improve-ai-workflows/use-metrics-to-measure-quality)
 - promptfoo — [HTTP provider](https://www.promptfoo.dev/docs/providers/http/), [Test cases desde CSV](https://www.promptfoo.dev/docs/configuration/test-cases/), [Google Sheets](https://www.promptfoo.dev/docs/integrations/google-sheets/)
 - Microsoft — [Microsoft.Extensions.AI.Evaluation libraries](https://learn.microsoft.com/dotnet/ai/evaluation/libraries), [Tutorial con caché y reportes](https://learn.microsoft.com/dotnet/ai/evaluation/evaluate-with-reporting), [Blog: Put your AI to the test](https://developer.microsoft.com/blog/put-your-ai-to-the-test-with-microsoft-extensions-ai-evaluation/)
 - Comparativas (publicadas por proveedores, leer con cuidado) — [TrueFoundry](https://www.truefoundry.com/blog/best-ai-evaluation-tools), [Latitude](https://latitude.so/blog/best-ai-agent-evaluation-platforms-2026-comprehensive-comparison)
