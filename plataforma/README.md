@@ -158,6 +158,56 @@ La plataforma trae un servidor MCP de demostración en `/demo/mcp`, con las herr
 - **Demo · MCP: ¿las herramientas responden bien?** Llamada directa. Encuentra un error real que dejé a propósito: `buscar_cliente` distingue mayúsculas.
 - **Demo · MCP: ¿el modelo elige bien las herramientas?** Modelo + MCP. Necesita el juez IA configurado, porque usa ese mismo modelo.
 
+## Tokens cuando el servicio no los devuelve
+
+La mayoría de servicios devuelven solo el resultado. Para comparar eficiencia (tokens, llamadas al modelo, tiempo por paso) sin cambiar su respuesta, la plataforma lee las **trazas OpenTelemetry** del agente:
+
+1. En cada caso, la plataforma (o el ejecutor remoto) manda el encabezado estándar `traceparent` con una traza nueva.
+2. El agente, instrumentado con OpenTelemetry, continúa esa traza. ASP.NET Core, Spring, FastAPI, Express y casi todos los frameworks lo hacen solos al recibir el encabezado.
+3. Sus librerías de IA registran cada llamada al modelo con sus tokens, con los atributos GenAI estándar `gen_ai.usage.input_tokens` y `gen_ai.usage.output_tokens`. Lo hacen Microsoft.Extensions.AI, Semantic Kernel, LangChain/OpenLLMetry, OpenAI Agents SDK y otras.
+4. El agente exporta sus trazas a la plataforma (`POST /v1/traces`, OTLP en protobuf o JSON). La plataforma suma los tokens de esa traza y los asocia al caso.
+
+En el agente de la plataforma, activa **Medir tokens y pasos con las trazas del agente**. En el servicio del agente:
+
+```bash
+OTEL_EXPORTER_OTLP_ENDPOINT=https://evaluaciones.miempresa     # la plataforma
+OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+OTEL_BSP_SCHEDULE_DELAY=500                                    # enviar rápido en ambientes de evaluación
+OTEL_EXPORTER_OTLP_HEADERS=X-Trazas-Token=...                  # si configuraste Trazas__Token
+```
+
+C# con Microsoft.Extensions.AI (paquetes `OpenTelemetry.Extensions.Hosting`, `OpenTelemetry.Exporter.OpenTelemetryProtocol` y `OpenTelemetry.Instrumentation.AspNetCore`):
+
+```csharp
+builder.Services.AddOpenTelemetry().WithTracing(t => t
+    .AddSource("mi-agente")
+    .AddAspNetCoreInstrumentation()            // continúa el traceparent que manda la plataforma
+    .AddOtlpExporter());
+
+IChatClient chat = cliente.AsIChatClient()
+    .AsBuilder()
+    .UseOpenTelemetry(sourceName: "mi-agente") // registra cada llamada al modelo con sus tokens
+    .Build();
+```
+
+Qué obtienes por caso:
+- tokens de entrada y salida;
+- número de llamadas al modelo y qué modelos;
+- pasos con su duración, incluidas las herramientas si el framework las registra.
+
+Por corrida: tokens promedio y llamadas al modelo promedio. **Consume pocos tokens** funciona igual que con tokens en la respuesta.
+
+Detalles:
+- **No se cuenta dos veces:** si una cadena reporta tokens que también reportan sus llamadas internas, solo se cuentan las internas.
+- **Solo se guardan los spans de las trazas que inició la plataforma.** Si el agente exporta todo su tráfico, lo demás se descarta.
+- **La plataforma espera las trazas** hasta el tiempo configurado (15 s por defecto), porque los exportadores envían por lotes. Termina antes si ya llegaron los tokens.
+- **Con ejecutores remotos:** cada caso trae su `traceId` y el ejecutor manda el `traceparent`. El agente exporta a la plataforma, que debe ser alcanzable desde su red; es una conexión saliente.
+
+Si el servicio no se puede instrumentar (un producto de terceros, por ejemplo):
+- **Pasarela de modelos:** apunta el agente a un proxy compatible con OpenAI que registre el consumo, como LiteLLM o Azure API Management, con una clave usada solo por el ambiente de evaluación. Con concurrencia 1 se puede atribuir el consumo a cada caso por tiempo.
+- **Métricas del proveedor** por clave o proyecto dedicado (OpenAI, Azure OpenAI, Anthropic): da el total por corrida, no por caso.
+- **Estimar** tokens a partir del texto de entrada y salida no sirve para agentes: no ve el prompt de sistema, los documentos del RAG, las llamadas a herramientas ni las varias vueltas al modelo.
+
 ## Agentes en redes privadas u otras tecnologías
 
 Muchas veces el agente no es alcanzable desde la plataforma. Puede vivir en un microservicio dentro de una red privada, o no hablar HTTP: gRPC, una cola de mensajes, una librería dentro de otro servicio, un proceso por consola. Para eso se separa quién **ejecuta** al agente de quién **califica**:
@@ -310,6 +360,8 @@ Con **Repeticiones por caso** mayor que 1, cada caso se corre varias veces y el 
 | `Juez:Endpoint`, `Juez:ApiKey`, `Juez:Model` | vacío | Modelo juez (ver arriba) |
 | `Corridas:MaxConcurrency` | `3` | Casos en paralelo por corrida (cuando llama la plataforma). Bájalo si el agente se satura |
 | `Ejecutores:Token` | vacío | Token que deben enviar los ejecutores remotos. Vacío = API de ejecutores apagada |
+| `Trazas:Habilitado` | `true` | Receptor OTLP de trazas en `/v1/traces` |
+| `Trazas:Token` | vacío | Si se define, los agentes deben mandarlo en `X-Trazas-Token` (o `Authorization: Bearer`) |
 | `Demo:Habilitado` | `true` | Expone el agente simulado en `/demo/helpdesk` y el servidor MCP de demostración en `/demo/mcp` |
 | `Demo:CrearEjemplo` | `true` | Crea el ejemplo si la base está vacía |
 
@@ -344,8 +396,9 @@ La misma imagen sirve como ejecutor remoto (`evaluaciones ejecutor --plataforma 
 ## Desarrollo
 
 ```bash
-dotnet test        # 51 pruebas: rutas JSON, plantillas, importación, comparaciones, juez, generación de casos,
-                   # migración de la base, MCP (directo y con modelo), ejecutores remotos y flujo completo por API
+dotnet test        # 57 pruebas: rutas JSON, plantillas, importación, comparaciones, juez, generación de casos,
+                   # migración de la base, MCP (directo y con modelo), ejecutores remotos, trazas OTLP
+                   # y flujo completo por API
 ```
 
 Estructura:

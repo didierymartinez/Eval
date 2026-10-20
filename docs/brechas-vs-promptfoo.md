@@ -44,7 +44,7 @@ Estos tres son de otra categoría; no los recomiendo para esta plataforma.
 | **Costo en dinero** por caso y por corrida, y la comparación `cost` | Solo tokens | Baja-media |
 | **Repetir solo los fallidos** (`--filter-failing`), muestras y filtros por metadatos | Se corre todo el dataset | Media cuando el dataset crece |
 | Reintentos con espera ante límites de tasa (429) y pausas entre llamadas | Concurrencia configurable, sin reintentos | Media con modelos públicos |
-| **Trazas OpenTelemetry** del agente y comparaciones sobre ellas: cantidad de pasos, duración, errores | No | Media: permite evaluar el *camino* del agente sin instrumentar la respuesta |
+| **Trazas OpenTelemetry** del agente y comparaciones sobre ellas: cantidad de pasos, duración, errores | Sí recibe trazas (OTLP): tokens, llamadas al modelo y pasos por caso, sin cambiar la respuesta del servicio. Faltan comparaciones sobre las trazas (máximo de pasos, duración por paso, errores) | Baja-media |
 | ~100 proveedores de modelos integrados; proveedores propios en Python, JS, Ruby, Go, comando de consola, WebSocket, navegador; MCP por stdio | HTTP, API compatible con OpenAI, MCP por HTTP, y cualquier tecnología mediante ejecutores | Baja: los ejecutores cubren lo que no es HTTP. Faltan WebSocket y MCP por stdio |
 | Configuración como código (YAML en el repositorio), CLI, librería Node y **GitHub Action** que bloquea el PR si baja la calidad | Todo se configura en la interfaz; la API existe pero no hay CLI ni puerta de CI | **Media-alta** si quieres que cada cambio de prompt pase por la evaluación automáticamente |
 | Generación de datasets con personas y casos límite | Sí (Generar con IA), sin personas | Baja |

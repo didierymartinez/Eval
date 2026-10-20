@@ -18,6 +18,11 @@ public static class SchemaUpgrade
         ("RunResults", "ToolCalls", "TEXT NOT NULL DEFAULT '[]'"),
         ("Agents", "Executor", "TEXT NULL"),
         ("Runs", "Executor", "TEXT NULL"),
+        ("Agents", "TracesEnabled", "INTEGER NOT NULL DEFAULT 0"),
+        ("Agents", "TraceWaitSeconds", "INTEGER NOT NULL DEFAULT 15"),
+        ("RunResults", "TraceId", "TEXT NULL"),
+        ("RunResults", "Trace", "TEXT NOT NULL DEFAULT '{}'"),
+        ("RunTasks", "TraceId", "TEXT NULL"),
     ];
 
     // Tablas nuevas; mismo esquema que crea EnsureCreated (ver la prueba de migración).

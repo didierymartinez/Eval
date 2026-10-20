@@ -111,6 +111,8 @@ public class SchemaUpgradeTests
                     ALTER TABLE "Agents" DROP COLUMN "TokensPath"; ALTER TABLE "Agents" DROP COLUMN "ToolArgumentsPath";
                     ALTER TABLE "Agents" DROP COLUMN "Kind"; ALTER TABLE "Agents" DROP COLUMN "Mcp";
                     ALTER TABLE "Agents" DROP COLUMN "Executor"; ALTER TABLE "Runs" DROP COLUMN "Executor";
+                    ALTER TABLE "Agents" DROP COLUMN "TracesEnabled"; ALTER TABLE "Agents" DROP COLUMN "TraceWaitSeconds";
+                    ALTER TABLE "RunResults" DROP COLUMN "TraceId"; ALTER TABLE "RunResults" DROP COLUMN "Trace";
                     DROP TABLE "RunTasks";
                     INSERT INTO "Agents" ("Name", "Url", "Method", "Headers", "BodyTemplate", "ResponsePath", "TimeoutSeconds", "CreatedAt") VALUES ('viejo', 'http://x', 'POST', '{{}}', '', '', 10, 0);
                     """);
@@ -127,6 +129,8 @@ public class SchemaUpgradeTests
                 Agent viejo = await db.Agents.SingleAsync();
                 Assert.Equal(AgentKinds.Http, viejo.Kind);
                 Assert.Equal("{{herramienta}}", viejo.Mcp.ToolTemplate);
+                Assert.False(viejo.TracesEnabled);
+                Assert.Equal(15, viejo.TraceWaitSeconds);
                 db.RunTasks.Add(new RunTask { RunId = 1, Group = "g", Input = "x", Row = new() { ["a"] = "b" }, LeaseUntil = DateTimeOffset.UtcNow });
                 await db.SaveChangesAsync();
                 Assert.Equal("b", (await db.RunTasks.SingleAsync()).Row["a"]);

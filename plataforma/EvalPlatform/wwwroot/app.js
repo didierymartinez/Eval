@@ -209,6 +209,24 @@ function executorBadge(state) {
     ? h('span', { class: 'badge ok' }, `${online.length} ejecutor(es) conectado(s): ${online.map((e) => e.nombre).join(', ')}`)
     : h('span', { class: 'badge warn' }, 'Ningún ejecutor conectado ahora');
 }
+// Pasos del agente según sus trazas OpenTelemetry (llamadas al modelo, herramientas).
+function traceStepsTable(trace) {
+  if (!trace || !trace.spans) return null;
+  const fmt = (n) => (n == null ? '—' : n.toLocaleString('es'));
+  return h('div', null,
+    h('p', { class: 'small', style: { margin: '6px 0' } },
+      h('strong', null, 'Por trazas: '),
+      `${fmt(trace.inputTokens)} tokens de entrada · ${fmt(trace.outputTokens)} de salida · ${trace.modelCalls} llamada(s) al modelo`,
+      trace.models?.length ? ` (${trace.models.join(', ')})` : '', ` · ${trace.spans} span(s) recibidos`),
+    trace.steps?.length ? h('div', { class: 'table-wrap' }, h('table', null,
+      h('thead', null, h('tr', null, h('th', null, 'Paso'), h('th', null, 'Modelo / herramienta'), h('th', null, 'Entrada'), h('th', null, 'Salida'), h('th', null, 'Duración'))),
+      h('tbody', null, trace.steps.map((s) => h('tr', null,
+        h('td', { class: 'mono' }, s.name, s.counted ? null : h('span', { class: 'muted small' }, s.inputTokens != null ? ' (incluido en sus pasos internos)' : '')),
+        h('td', null, s.tool || s.model || h('span', { class: 'muted' }, '—')),
+        h('td', null, fmt(s.inputTokens)), h('td', null, fmt(s.outputTokens)),
+        h('td', { class: 'muted small' }, `${Math.round(s.durationMs)} ms`)))))) : null);
+}
+
 const kindLabel = (kind) => (AGENT_KINDS.find((k) => k[0] === (kind || 'http')) || AGENT_KINDS[0])[1];
 const toolCallText = (t) => (t.arguments ? `${t.name}(${t.arguments})` : t.name);
 
@@ -257,6 +275,7 @@ async function pageAgentForm(id) {
     headers: Object.fromEntries(headers.filter(([k]) => k.trim())),
     bodyTemplate: a.bodyTemplate, responsePath: a.responsePath, contextPath: a.contextPath, toolsPath: a.toolsPath,
     toolArgumentsPath: a.toolArgumentsPath, tokensPath: a.tokensPath, timeoutSeconds: Number(a.timeoutSeconds) || 120,
+    tracesEnabled: !!a.tracesEnabled, traceWaitSeconds: Number(a.traceWaitSeconds) || 15,
     mcp: { ...a.mcp, temperature: a.mcp.temperature === '' || a.mcp.temperature == null ? null : Number(a.mcp.temperature) },
   });
 
@@ -315,7 +334,10 @@ async function pageAgentForm(id) {
           showContext ? h('p', null, h('strong', null, a.kind === 'mcp_modelo' ? `Resultados de herramientas: ${r.context.length}` : `Documentos recuperados: ${r.context.length}`),
             r.context.length || a.kind !== 'http' ? null : h('span', { class: 'muted' }, ' (la ruta no encontró documentos)')) : null,
           r.context.length ? h('details', null, h('summary', null, 'Ver'), r.context.map((c) => h('pre', null, c))) : null,
-          r.tokens != null || (a.kind === 'http' && a.tokensPath) ? h('p', null, h('strong', null, 'Tokens: '), r.tokens ?? h('span', { class: 'muted' }, 'la ruta no encontró tokens')) : null) : null,
+          r.tokens != null || (a.kind === 'http' && a.tokensPath) ? h('p', null, h('strong', null, 'Tokens: '), r.tokens ?? h('span', { class: 'muted' }, 'la ruta no encontró tokens')) : null,
+          a.tracesEnabled ? (r.trace
+            ? traceStepsTable(r.trace)
+            : h('div', { class: 'notice warn small' }, `No llegaron trazas del agente en ${a.traceWaitSeconds || 15} s. Revisa que exporte a ${location.origin} (sección "Tokens por trazas" de abajo) y que propague el encabezado traceparent.`)) : null) : null,
         h('details', null, h('summary', null, 'Lo que se envió'), h('pre', null, pretty(r.requestBody || '') || '(sin cuerpo)')),
         r.raw ? h('details', { open: !r.ok || !r.output }, h('summary', null, 'Respuesta completa'), h('pre', null, pretty(r.raw))) : null);
     } catch (e) {
@@ -397,6 +419,35 @@ async function pageAgentForm(id) {
     oninput: (e) => { a.executor = e.target.value; }, onchange: refreshExecutor,
   });
 
+  const traceCard = () => h('div', { class: 'card' },
+    h('h3', null, 'Tokens por trazas (OpenTelemetry)'),
+    h('label', { class: 'inline' },
+      h('input', { type: 'checkbox', checked: !!a.tracesEnabled, onchange: (e) => { a.tracesEnabled = e.target.checked; draw(); } }),
+      'Medir tokens y pasos con las trazas del agente'),
+    h('p', { class: 'help' }, 'Para servicios que solo devuelven el resultado. La plataforma manda el encabezado traceparent en cada caso; el agente, si está instrumentado con OpenTelemetry, continúa esa traza y envía sus spans a la plataforma. Se suman los tokens de cada llamada al modelo (convenciones GenAI) sin cambiar la respuesta del servicio.'),
+    a.tracesEnabled ? h('div', null,
+      field('Esperar las trazas hasta (segundos)', h('input', { type: 'number', min: 1, max: 45, value: a.traceWaitSeconds || 15, style: { maxWidth: '160px' }, oninput: (e) => (a.traceWaitSeconds = e.target.value) }),
+        'Los exportadores envían por lotes, unos segundos después de responder.'),
+      h('details', { open: true }, h('summary', null, 'Cómo configurar el agente'),
+        h('p', { class: 'small' }, 'Variables de entorno del servicio del agente (cualquier lenguaje con OpenTelemetry):'),
+        h('pre', null,
+`OTEL_EXPORTER_OTLP_ENDPOINT=${location.origin}
+OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+OTEL_BSP_SCHEDULE_DELAY=500        # enviar rápido en ambientes de evaluación
+OTEL_SERVICE_NAME=mi-agente`),
+        h('p', { class: 'small' }, 'C# con Microsoft.Extensions.AI (paquetes OpenTelemetry.Extensions.Hosting, OpenTelemetry.Exporter.OpenTelemetryProtocol y OpenTelemetry.Instrumentation.AspNetCore):'),
+        h('pre', null,
+`builder.Services.AddOpenTelemetry().WithTracing(t => t
+    .AddSource("mi-agente")
+    .AddAspNetCoreInstrumentation()   // continúa el traceparent que manda la plataforma
+    .AddOtlpExporter());
+
+IChatClient chat = cliente.AsIChatClient()
+    .AsBuilder()
+    .UseOpenTelemetry(sourceName: "mi-agente")   // registra cada llamada con sus tokens
+    .Build();`),
+        h('p', { class: 'small muted' }, 'Semantic Kernel, LangChain/OpenLLMetry, OpenAI Agents SDK y otros frameworks emiten los mismos atributos (gen_ai.usage.input_tokens / output_tokens). Detrás de un ejecutor remoto, el agente exporta igual a la plataforma.'))) : null);
+
   const whereCard = () => h('div', { class: 'card' },
     h('h3', null, '¿Desde dónde se llama al agente?'),
     h('label', { class: 'inline', style: { marginBottom: '6px' } },
@@ -452,7 +503,7 @@ curl -X POST $PLATAFORMA/api/ejecutores/resultado \\
         onclick: () => { a.kind = kind; draw(); },
       }, h('strong', null, label), h('span', null, desc))))),
     a.kind === 'codigo' ? codeCard()
-      : [a.kind === 'http' ? httpCards() : [mcpCommon(), a.kind === 'mcp' ? mcpDirectCard() : mcpModelCard()], whereCard(), testCard()],
+      : [a.kind === 'http' ? httpCards() : [mcpCommon(), a.kind === 'mcp' ? mcpDirectCard() : mcpModelCard()], a.kind === 'mcp_modelo' ? null : traceCard(), whereCard(), testCard()],
     h('div', { class: 'actions' },
       h('button', { class: 'primary', onclick: save }, 'Guardar agente'),
       h('a', { class: 'button', href: '#/agentes' }, 'Volver'),
@@ -950,6 +1001,9 @@ async function pageRun(id) {
           h('div', { class: 'value' }, Math.round(summary.averageTokens).toLocaleString('es')),
           h('div', { class: 'label' }, 'tokens promedio por caso',
             summary.previousAverageTokens != null ? ` (${summary.averageTokens <= summary.previousAverageTokens ? '' : '+'}${Math.round(((summary.averageTokens - summary.previousAverageTokens) / summary.previousAverageTokens) * 100)}% vs anterior)` : null)) : null,
+        summary.averageModelCalls != null ? h('div', { class: 'stat' },
+          h('div', { class: 'value' }, summary.averageModelCalls.toLocaleString('es', { maximumFractionDigits: 1 })),
+          h('div', { class: 'label' }, 'llamadas al modelo por caso (trazas)')) : null,
         summary.casesPassingAllAttempts != null ? h('div', { class: 'stat' }, h('div', { class: 'value' }, `${summary.casesPassingAllAttempts}/${summary.cases}`), h('div', { class: 'label' }, 'casos que pasaron en todas las repeticiones')) : null,
         delta != null ? h('div', { class: `stat ${delta > 0 ? 'ok' : delta < 0 ? 'bad' : ''}` },
           h('div', { class: 'value' }, `${delta > 0 ? '+' : ''}${delta} pts`),
@@ -1020,6 +1074,7 @@ function caseDetail(r) {
             t.result ? h('details', { style: { marginTop: '2px' } }, h('summary', { class: 'small' }, 'resultado'), h('pre', null, t.result)) : null))))
       : r.tools.length ? h('p', null, h('strong', null, 'Herramientas usadas: '), r.tools.join(' → ')) : null,
     r.tokens != null ? h('p', null, h('strong', null, 'Tokens: '), r.tokens.toLocaleString('es')) : null,
+    r.trace && r.trace.spans ? h('details', { open: true }, h('summary', null, 'Pasos del agente (trazas)'), traceStepsTable(r.trace)) : null,
     h('details', null, h('summary', null, 'Datos del caso'),
       h('table', { style: { marginTop: '6px' } }, h('tbody', null, Object.entries(r.row).map(([k, v]) => h('tr', null, h('th', { style: { width: '220px' } }, k), h('td', null, v)))))),
     r.rawResponse ? h('details', null, h('summary', null, 'Respuesta completa del agente'), h('pre', null, pretty(r.rawResponse))) : null);

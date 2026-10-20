@@ -73,7 +73,7 @@ public static class ExecutorWorker
 
                 foreach (ExecutorTask task in tasks)
                 {
-                    AgentInvocation r = await dispatcher.InvokeAsync(task.Agent, task.Input, task.Row, ct);
+                    AgentInvocation r = await dispatcher.InvokeAsync(task.Agent, task.Input, task.Row, ct, task.TraceId);
                     var result = new ExecutorResult(
                         task.TaskId,
                         r.Output,

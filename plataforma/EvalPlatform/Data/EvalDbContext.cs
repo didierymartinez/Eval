@@ -41,6 +41,7 @@ public sealed class EvalDbContext(DbContextOptions<EvalDbContext> options) : DbC
             e.Json(r => r.Context);
             e.Json(r => r.Tools);
             e.Json(r => r.ToolCalls);
+            e.Json(r => r.Trace);
             e.Json(r => r.Checks);
             e.Property(r => r.Outcome).HasConversion<string>();
         });

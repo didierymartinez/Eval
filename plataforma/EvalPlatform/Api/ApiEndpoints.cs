@@ -20,7 +20,9 @@ public sealed record AgentInput(
     string? Kind = null,
     McpSettings? Mcp = null,
     string? ToolArgumentsPath = null,
-    string? Executor = null);
+    string? Executor = null,
+    bool? TracesEnabled = null,
+    int? TraceWaitSeconds = null);
 
 public sealed record AgentTestInput(AgentInput Agent, string Input, Dictionary<string, string>? Row);
 
@@ -127,13 +129,16 @@ public static class ApiEndpoints
         });
 
         // Prueba la conexión con un texto de ejemplo, sin guardar nada.
-        g.MapPost("/probar", async (AgentTestInput test, AgentDispatcher dispatcher, CancellationToken ct) =>
+        g.MapPost("/probar", async (AgentTestInput test, AgentDispatcher dispatcher, TraceStore traces, CancellationToken ct) =>
         {
             if (Validate(test.Agent) is string error)
             {
                 return Bad(error);
             }
-            AgentInvocation r = await dispatcher.InvokeAsync(Apply(new Agent(), test.Agent), test.Input ?? "", test.Row ?? [], ct);
+            Agent agent = Apply(new Agent(), test.Agent);
+            string? traceId = agent.TracesEnabled ? traces.Register() : null;
+            AgentInvocation r = await dispatcher.InvokeAsync(agent, test.Input ?? "", test.Row ?? [], ct, traceId);
+            await TraceEnricher.ApplyAsync(traces, agent, r, ct);
             return Results.Ok(new
             {
                 ok = r.Succeeded,
@@ -146,6 +151,8 @@ public static class ApiEndpoints
                 tools = r.Tools,
                 toolCalls = r.ToolCalls,
                 tokens = r.Tokens,
+                traceId = r.TraceId,
+                trace = r.Trace,
                 raw = r.RawResponse,
             });
         });
@@ -219,6 +226,8 @@ public static class ApiEndpoints
         agent.ToolArgumentsPath = string.IsNullOrWhiteSpace(input.ToolArgumentsPath) ? null : input.ToolArgumentsPath.Trim();
         agent.Kind = input.Kind ?? AgentKinds.Http;
         agent.Executor = string.IsNullOrWhiteSpace(input.Executor) ? null : input.Executor.Trim().ToLowerInvariant();
+        agent.TracesEnabled = input.TracesEnabled ?? false;
+        agent.TraceWaitSeconds = Math.Clamp(input.TraceWaitSeconds ?? 15, 1, 45);
         agent.Mcp = input.Mcp ?? new McpSettings();
         agent.TimeoutSeconds = Math.Clamp(input.TimeoutSeconds ?? 120, 1, 1800);
         return agent;

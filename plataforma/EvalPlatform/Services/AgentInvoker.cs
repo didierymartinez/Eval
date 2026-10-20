@@ -17,7 +17,9 @@ public sealed class AgentInvocation
     public List<string> Context { get; init; } = [];
     public List<string> Tools { get; init; } = [];
     public List<ToolCallRecord> ToolCalls { get; init; } = [];
-    public int? Tokens { get; init; }
+    public int? Tokens { get; set; }
+    public string? TraceId { get; set; }
+    public TraceSummary? Trace { get; set; }
     public long LatencyMs { get; init; }
     public string? Error { get; init; }
     public bool Succeeded => Error is null;
@@ -38,7 +40,7 @@ public sealed class AgentInvoker(IHttpClientFactory httpFactory)
         return vars;
     }
 
-    public async Task<AgentInvocation> InvokeAsync(Agent agent, string input, IReadOnlyDictionary<string, string> row, CancellationToken cancellationToken)
+    public async Task<AgentInvocation> InvokeAsync(Agent agent, string input, IReadOnlyDictionary<string, string> row, CancellationToken cancellationToken, string? traceId = null)
     {
         Dictionary<string, string> vars = Variables(input, row);
         HttpMethod method = HttpMethod.Parse(string.IsNullOrWhiteSpace(agent.Method) ? "POST" : agent.Method.Trim().ToUpperInvariant());
@@ -55,6 +57,11 @@ public sealed class AgentInvoker(IHttpClientFactory httpFactory)
         }
 
         using var request = new HttpRequestMessage(method, url);
+        if (traceId is not null)
+        {
+            // W3C Trace Context: el agente continúa esta traza y sus spans llegan con este id.
+            request.Headers.TryAddWithoutValidation("traceparent", TraceStore.TraceParent(traceId));
+        }
         string contentType = "application/json";
         foreach (var (name, value) in agent.Headers)
         {

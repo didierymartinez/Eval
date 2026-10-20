@@ -61,13 +61,13 @@ public sealed class McpInvoker(IHttpClientFactory httpFactory, IAgentModelFactor
         return tools.Select(t => new McpToolInfo(t.Name, t.Title, t.Description, t.JsonSchema)).ToList();
     }
 
-    public async Task<AgentInvocation> InvokeAsync(Agent agent, string input, IReadOnlyDictionary<string, string> row, CancellationToken ct)
+    public async Task<AgentInvocation> InvokeAsync(Agent agent, string input, IReadOnlyDictionary<string, string> row, CancellationToken ct, string? traceId = null)
     {
         Dictionary<string, string> vars = AgentInvoker.Variables(input, row);
         using CancellationTokenSource timeout = Timeout(agent, ct);
         try
         {
-            await using McpClient client = await ConnectAsync(agent, vars, timeout.Token);
+            await using McpClient client = await ConnectAsync(agent, vars, timeout.Token, traceId);
             return agent.Kind == AgentKinds.McpModel
                 ? await RunWithModelAsync(agent, client, input, vars, timeout.Token)
                 : await CallToolAsync(agent, client, vars, timeout.Token);
@@ -214,7 +214,7 @@ public sealed class McpInvoker(IHttpClientFactory httpFactory, IAgentModelFactor
         };
     }
 
-    private async Task<McpClient> ConnectAsync(Agent agent, IReadOnlyDictionary<string, string> vars, CancellationToken ct)
+    private async Task<McpClient> ConnectAsync(Agent agent, IReadOnlyDictionary<string, string> vars, CancellationToken ct, string? traceId = null)
     {
         Uri endpoint;
         try
@@ -232,7 +232,7 @@ public sealed class McpInvoker(IHttpClientFactory httpFactory, IAgentModelFactor
                 Endpoint = endpoint,
                 TransportMode = HttpTransportMode.AutoDetect,
                 Name = agent.Name,
-                AdditionalHeaders = agent.Headers.ToDictionary(h => h.Key, h => Templates.RenderText(h.Value, vars)),
+                AdditionalHeaders = WithTraceParent(agent.Headers.ToDictionary(h => h.Key, h => Templates.RenderText(h.Value, vars)), traceId),
             },
             httpFactory.CreateClient(AgentInvoker.HttpClientName),
             NullLoggerFactory.Instance,
@@ -249,6 +249,15 @@ public sealed class McpInvoker(IHttpClientFactory httpFactory, IAgentModelFactor
         {
             throw new McpConnectionException($"No se pudo conectar con el servidor MCP: {ex.Message}", ex);
         }
+    }
+
+    private static Dictionary<string, string> WithTraceParent(Dictionary<string, string> headers, string? traceId)
+    {
+        if (traceId is not null)
+        {
+            headers["traceparent"] = TraceStore.TraceParent(traceId);
+        }
+        return headers;
     }
 
     private static CancellationTokenSource Timeout(Agent agent, CancellationToken ct)
@@ -321,13 +330,39 @@ internal sealed class TextResultTool(McpClientTool tool) : DelegatingAIFunction(
     }
 }
 
-// Elige cómo llamar al agente según su tipo.
+// Elige cómo llamar al agente según su tipo. Con traceId, le pasa al agente el encabezado
+// traceparent para que sus trazas OpenTelemetry lleguen asociadas al caso.
 public sealed class AgentDispatcher(AgentInvoker http, McpInvoker mcp)
 {
-    public Task<AgentInvocation> InvokeAsync(Agent agent, string input, IReadOnlyDictionary<string, string> row, CancellationToken ct) => agent.Kind switch
+    public async Task<AgentInvocation> InvokeAsync(Agent agent, string input, IReadOnlyDictionary<string, string> row, CancellationToken ct, string? traceId = null)
     {
-        AgentKinds.Code => Task.FromResult(new AgentInvocation { Error = "Este agente lo ejecuta tu propio código: la plataforma no puede llamarlo. Ejecuta una evaluación y deja corriendo tu ejecutor." }),
-        AgentKinds.McpDirect or AgentKinds.McpModel => mcp.InvokeAsync(agent, input, row, ct),
-        _ => http.InvokeAsync(agent, input, row, ct),
-    };
+        AgentInvocation result = agent.Kind switch
+        {
+            AgentKinds.Code => new AgentInvocation { Error = "Este agente lo ejecuta tu propio código: la plataforma no puede llamarlo. Ejecuta una evaluación y deja corriendo tu ejecutor." },
+            AgentKinds.McpDirect or AgentKinds.McpModel => await mcp.InvokeAsync(agent, input, row, ct, traceId),
+            _ => await http.InvokeAsync(agent, input, row, ct, traceId),
+        };
+        result.TraceId = traceId;
+        return result;
+    }
+}
+
+// Completa una respuesta con lo que dicen las trazas del agente (tokens, llamadas al modelo).
+public static class TraceEnricher
+{
+    public static async Task ApplyAsync(TraceStore traces, Agent agent, AgentInvocation invocation, CancellationToken ct)
+    {
+        if (!agent.TracesEnabled || invocation.TraceId is null || !invocation.Succeeded)
+        {
+            return;
+        }
+        TraceSummary? summary = await traces.WaitAsync(invocation.TraceId, TimeSpan.FromSeconds(Math.Clamp(agent.TraceWaitSeconds, 1, 45)), ct);
+        if (summary is null)
+        {
+            return;
+        }
+        invocation.Trace = summary;
+        // Si la respuesta ya traía tokens, mandan esos; si no, los de las trazas.
+        invocation.Tokens ??= summary.TotalTokens;
+    }
 }

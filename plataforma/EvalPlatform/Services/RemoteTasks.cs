@@ -22,7 +22,8 @@ public sealed record ExecutorTask(
     int Attempt,
     string Input,
     Dictionary<string, string> Row,
-    Agent Agent);
+    Agent Agent,
+    string? TraceId);
 
 // Lo que devuelve un ejecutor. Arguments puede venir como objeto JSON o como texto con JSON.
 public sealed record ExecutorToolCall(string Name, JsonElement? Arguments, string? Result);
@@ -43,7 +44,7 @@ public sealed record ExecutorSeen(string Group, string Worker, string Mode, Date
 public sealed class TaskNotFoundException(string message) : Exception(message);
 
 // Reparte los casos de las corridas remotas entre los ejecutores de cada grupo y califica lo que devuelven.
-public sealed partial class RemoteTasks(IDbContextFactory<EvalDbContext> dbFactory, RunRecorder recorder, IServiceScopeFactory scopes)
+public sealed partial class RemoteTasks(IDbContextFactory<EvalDbContext> dbFactory, RunRecorder recorder, IServiceScopeFactory scopes, TraceStore traces)
 {
     private readonly SemaphoreSlim _claimLock = new(1, 1);
     private readonly ConcurrentDictionary<(string Group, string Worker), ExecutorSeen> _seen = new();
@@ -122,7 +123,9 @@ public sealed partial class RemoteTasks(IDbContextFactory<EvalDbContext> dbFacto
                 task.Worker = worker;
                 task.Deliveries++;
                 task.LeaseUntil = now.AddSeconds(Math.Clamp(agent.TimeoutSeconds, 1, 1800) + 60);
-                claimed.Add(new ExecutorTask(task.Id, task.RunId, task.RowIndex + 1, task.Attempt, task.Input, task.Row, agent));
+                // Cada entrega lleva su propia traza: el ejecutor manda traceparent y el agente sus spans.
+                task.TraceId = agent.TracesEnabled ? traces.Register() : null;
+                claimed.Add(new ExecutorTask(task.Id, task.RunId, task.RowIndex + 1, task.Attempt, task.Input, task.Row, agent, task.TraceId));
             }
             await db.SaveChangesAsync(ct);
             return claimed;
@@ -186,9 +189,12 @@ public sealed partial class RemoteTasks(IDbContextFactory<EvalDbContext> dbFacto
             Error = string.IsNullOrWhiteSpace(input.Error) ? null : input.Error,
             RawResponse = input.Raw,
             HttpStatus = input.HttpStatus,
+            TraceId = task.TraceId,
             // Sin respuesta cruda, "Comparar otro campo" puede usar output, toolCalls, etc.
             Json = json ?? JsonSerializer.SerializeToNode(new { output = input.Output, toolCalls = calls, context = input.Context, tokens = input.Tokens }, JsonSerializerOptions.Web),
         };
+
+        await TraceEnricher.ApplyAsync(traces, agent, invocation, ct);
 
         using IServiceScope scope = scopes.CreateScope();
         RunResult result = await scope.ServiceProvider.GetRequiredService<RunExecutor>()

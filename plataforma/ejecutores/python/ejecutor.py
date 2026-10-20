@@ -27,11 +27,15 @@ GRUPO = os.environ.get("EVAL_GRUPO", "")
 NOMBRE = os.environ.get("EVAL_NOMBRE", f"python-{socket.gethostname()}")
 
 
-def ejecutar_agente(entrada, datos):
+def ejecutar_agente(entrada, datos, traceparent=None):
     """Llama a tu agente con la entrada del caso y devuelve lo que respondió.
 
-    entrada: el texto de la columna de entrada de la evaluación.
-    datos:   todas las columnas del caso (dict), por si tu agente necesita más datos.
+    entrada:     el texto de la columna de entrada de la evaluación.
+    datos:       todas las columnas del caso (dict), por si tu agente necesita más datos.
+    traceparent: si el agente en la plataforma tiene "Medir tokens con trazas", el encabezado
+                 W3C con que el agente debe continuar la traza (mándalo como header
+                 "traceparent" o úsalo como contexto padre de OpenTelemetry). Así sus tokens
+                 llegan a la plataforma aunque el agente no los devuelva.
 
     Devuelve un dict; solo "salida" es obligatoria:
         salida:        texto de la respuesta
@@ -54,6 +58,13 @@ def ejecutar_agente(entrada, datos):
     return {"salida": "Puedo consultar la cartera de un cliente por su código.", "herramientas": []}
 
 
+def traceparent(caso):
+    """Encabezado W3C Trace Context para la traza que la plataforma asignó al caso (o None)."""
+    if not caso.get("traceId"):
+        return None
+    return f"00-{caso['traceId']}-{os.urandom(8).hex()}-01"
+
+
 def llamar(ruta, cuerpo, espera=60):
     pedido = urllib.request.Request(
         f"{PLATAFORMA}/api/ejecutores/{ruta}",
@@ -69,7 +80,7 @@ def procesar(caso):
     inicio = time.monotonic()
     resultado = {"taskId": caso["taskId"]}
     try:
-        r = ejecutar_agente(caso["input"], caso["row"])
+        r = ejecutar_agente(caso["input"], caso["row"], traceparent(caso))
         resultado.update(
             output=str(r.get("salida", "")),
             toolCalls=[

@@ -103,6 +103,7 @@ public sealed class RunExecutor(
     AgentDispatcher invoker,
     CheckRunner checks,
     RunRecorder recorder,
+    TraceStore traces,
     IOptions<RunnerOptions> options,
     ILogger<RunExecutor> logger)
 {
@@ -165,7 +166,9 @@ public sealed class RunExecutor(
                 {
                     Dictionary<string, string> row = dataset.Rows[c.Index];
                     string input = InputOf(evaluation, row);
-                    AgentInvocation invocation = await invoker.InvokeAsync(agent, input, row, ct);
+                    string? traceId = agent.TracesEnabled ? traces.Register() : null;
+                    AgentInvocation invocation = await invoker.InvokeAsync(agent, input, row, ct, traceId);
+                    await TraceEnricher.ApplyAsync(traces, agent, invocation, ct);
                     RunResult result = await GradeAsync(run, agent, row, c.Index, c.Attempt, input, invocation, ct);
                     await recorder.RecordAsync(result, ct);
                 });
@@ -215,6 +218,8 @@ public sealed class RunExecutor(
             HttpStatus = invocation.HttpStatus,
             LatencyMs = invocation.LatencyMs,
             Tokens = invocation.Tokens,
+            TraceId = invocation.TraceId,
+            Trace = invocation.Trace ?? new TraceSummary(),
         };
 
         if (!invocation.Succeeded)

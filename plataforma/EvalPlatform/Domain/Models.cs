@@ -1,3 +1,5 @@
+using EvalPlatform.Services;
+
 namespace EvalPlatform.Domain;
 
 public static class AgentKinds
@@ -45,6 +47,11 @@ public sealed class Agent
 
     // Grupo de ejecutores que llama al agente desde su red. Vacío = lo llama la plataforma.
     public string? Executor { get; set; }
+
+    // Tokens y pasos por las trazas OpenTelemetry que el agente envía a la plataforma (/v1/traces),
+    // para servicios que no devuelven los tokens en su respuesta.
+    public bool TracesEnabled { get; set; }
+    public int TraceWaitSeconds { get; set; } = 15;
     public string Url { get; set; } = "";
     public string Method { get; set; } = "POST";
 
@@ -73,7 +80,7 @@ public sealed class Agent
     public bool ProvidesTools => Kind == AgentKinds.Code || AgentKinds.IsMcp(Kind) || !string.IsNullOrWhiteSpace(ToolsPath);
     public bool ProvidesToolArguments => Kind == AgentKinds.Code || AgentKinds.IsMcp(Kind) || !string.IsNullOrWhiteSpace(ToolArgumentsPath);
     public bool ProvidesContext => Kind is AgentKinds.Code or AgentKinds.McpModel || (Kind == AgentKinds.Http && !string.IsNullOrWhiteSpace(ContextPath));
-    public bool ProvidesTokens => Kind is AgentKinds.Code or AgentKinds.McpModel || (Kind == AgentKinds.Http && !string.IsNullOrWhiteSpace(TokensPath));
+    public bool ProvidesTokens => TracesEnabled || Kind is AgentKinds.Code or AgentKinds.McpModel || (Kind == AgentKinds.Http && !string.IsNullOrWhiteSpace(TokensPath));
     public bool RunsRemotely => Kind == AgentKinds.Code || !string.IsNullOrWhiteSpace(Executor);
 }
 
@@ -186,6 +193,8 @@ public sealed class RunResult
     public int? HttpStatus { get; set; }
     public long LatencyMs { get; set; }
     public int? Tokens { get; set; }
+    public string? TraceId { get; set; }
+    public TraceSummary Trace { get; set; } = new();
     public CaseOutcome Outcome { get; set; }
     public string? Error { get; set; }
     public List<CheckResult> Checks { get; set; } = [];
@@ -224,4 +233,5 @@ public sealed class RunTask
     public string? Worker { get; set; }
     public int Deliveries { get; set; }
     public DateTimeOffset? LeaseUntil { get; set; }
+    public string? TraceId { get; set; }
 }

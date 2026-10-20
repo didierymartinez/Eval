@@ -23,6 +23,7 @@ builder.Services.AddDbContextFactory<EvalDbContext>(o => o.UseSqlite(connectionS
 builder.Services.Configure<JudgeOptions>(builder.Configuration.GetSection("Juez"));
 builder.Services.Configure<RunnerOptions>(builder.Configuration.GetSection("Corridas"));
 builder.Services.Configure<ExecutorOptions>(builder.Configuration.GetSection("Ejecutores"));
+builder.Services.Configure<TraceOptions>(builder.Configuration.GetSection("Trazas"));
 
 // Sin límite global: cada agente define su propio tiempo máximo.
 builder.Services.AddHttpClient(AgentInvoker.HttpClientName, c => c.Timeout = Timeout.InfiniteTimeSpan);
@@ -37,6 +38,7 @@ builder.Services.AddSingleton<CheckRunner>();
 builder.Services.AddSingleton<RunQueue>();
 builder.Services.AddSingleton<RunRecorder>();
 builder.Services.AddSingleton<RemoteTasks>();
+builder.Services.AddSingleton<TraceStore>();
 builder.Services.AddScoped<RunExecutor>();
 builder.Services.AddHostedService<RunWorker>();
 
@@ -66,6 +68,7 @@ app.UseDefaultFiles();
 app.UseStaticFiles();
 app.MapEvalApi();
 app.MapExecutorApi();
+app.MapTraceReceiver();
 
 // Agente de demostración para probar la plataforma sin conectar nada.
 if (demo)
