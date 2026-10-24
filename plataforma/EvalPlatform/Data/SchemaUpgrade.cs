@@ -33,6 +33,11 @@ public static class SchemaUpgrade
         ("Runs", "JudgeName", "TEXT NULL"),
         ("Runs", "ImportedFrom", "TEXT NULL"),
         ("RunResults", "JudgeTokens", "INTEGER NULL"),
+        ("Evaluations", "RequiresReview", "INTEGER NOT NULL DEFAULT 0"),
+        ("Runs", "ReviewStatus", "TEXT NULL"),
+        ("Runs", "Reviewer", "TEXT NULL"),
+        ("Runs", "ReviewedAt", "INTEGER NULL"),
+        ("RunResults", "ReviewChecks", "TEXT NOT NULL DEFAULT '[]'"),
     ];
 
     // Tablas nuevas; mismo esquema que crea EnsureCreated (ver la prueba de migración).

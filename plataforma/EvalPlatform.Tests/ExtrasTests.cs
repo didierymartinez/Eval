@@ -129,6 +129,9 @@ public class SchemaUpgradeTests
                     ALTER TABLE "Evaluations" DROP COLUMN "JudgeId"; ALTER TABLE "Runs" DROP COLUMN "JudgeId";
                     ALTER TABLE "Runs" DROP COLUMN "JudgeName"; ALTER TABLE "Runs" DROP COLUMN "ImportedFrom";
                     ALTER TABLE "RunResults" DROP COLUMN "JudgeTokens";
+                    ALTER TABLE "Evaluations" DROP COLUMN "RequiresReview"; ALTER TABLE "Runs" DROP COLUMN "ReviewStatus";
+                    ALTER TABLE "Runs" DROP COLUMN "Reviewer"; ALTER TABLE "Runs" DROP COLUMN "ReviewedAt";
+                    ALTER TABLE "RunResults" DROP COLUMN "ReviewChecks";
                     DROP TABLE "Judges"; DROP TABLE "JudgeUsages";
                     INSERT INTO "Evaluations" ("Name", "AgentId", "DatasetId", "InputColumn", "Checks", "Repetitions", "CreatedAt") VALUES ('vieja', 1, 1, 'input', '[]', 1, 0);
                     INSERT INTO "Agents" ("Name", "Url", "Method", "Headers", "BodyTemplate", "ResponsePath", "TimeoutSeconds", "CreatedAt") VALUES ('viejo', 'http://x', 'POST', '{{}}', '', '', 10, 0);
@@ -223,6 +226,31 @@ public sealed class GenerationAndNotesTests : IDisposable
         using var workbook = new ClosedXML.Excel.XLWorkbook(await excel.Content.ReadAsStreamAsync());
         Assert.Equal("input", workbook.Worksheet(1).Cell(1, 3).GetString());
         Assert.Equal("¿Me recomiendas una película?", workbook.Worksheet(1).Cell(3, 3).GetString());
+    }
+
+    [Fact]
+    public async Task La_condicion_y_las_instrucciones_del_juez_quedan_guardadas()
+    {
+        int agentId = (await (await _client.PostAsJsonAsync("/api/agentes", new { name = "A", url = "http://localhost/demo/helpdesk", bodyTemplate = """{ "mensaje": "{{input}}" }""", responsePath = "output.respuesta" })).Content.ReadFromJsonAsync<JsonNode>())!["id"]!.GetValue<int>();
+        using var form = new MultipartFormDataContent { { new ByteArrayContent(Encoding.UTF8.GetBytes("input,referencia\nhola,adiós\n")), "archivo", "c.csv" } };
+        int datasetId = (await (await _client.PostAsync("/api/datasets/archivo", form)).Content.ReadFromJsonAsync<JsonNode>())!["id"]!.GetValue<int>();
+        int evaluationId = (await (await _client.PostAsJsonAsync("/api/evaluaciones", new
+        {
+            name = "E", agentId, datasetId, inputColumn = "input",
+            checks = new object[]
+            {
+                new { type = "correccion", expectedColumn = "referencia", blocking = true, onlyWhenPath = " output.puede_responder ", onlyWhenValue = "sí", judgeInstructions = "  No exijas fechas.  " },
+                // En una comparación sin juez las instrucciones no se guardan.
+                new { type = "contiene", expectedColumn = "referencia", blocking = true, judgeInstructions = "x" },
+            },
+        })).Content.ReadFromJsonAsync<JsonNode>())!["id"]!.GetValue<int>();
+
+        JsonNode checks = (await _client.GetFromJsonAsync<JsonNode>($"/api/evaluaciones/{evaluationId}"))!["evaluation"]!["checks"]!;
+        Assert.Equal("output.puede_responder", checks[0]!["onlyWhenPath"]!.GetValue<string>());
+        Assert.Equal("sí", checks[0]!["onlyWhenValue"]!.GetValue<string>());
+        Assert.Equal("No exijas fechas.", checks[0]!["judgeInstructions"]!.GetValue<string>());
+        Assert.Null(checks[1]!["judgeInstructions"]);
+        Assert.Null(checks[1]!["onlyWhenPath"]);
     }
 
     [Fact]

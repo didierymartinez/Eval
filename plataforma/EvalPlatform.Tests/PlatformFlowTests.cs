@@ -158,6 +158,69 @@ public sealed class PlatformFlowTests : IDisposable
         return JsonNode.Parse(text);
     }
 
+    [Fact]
+    public async Task Revision_externa_queda_pendiente_se_califica_y_se_compara_con_el_juez()
+    {
+        int agentId = (await PostJson("/api/agentes", new { name = "Helpdesk", url = "http://localhost/demo/helpdesk", bodyTemplate = """{ "mensaje": "{{input}}" }""", responsePath = "output.respuesta" }))!["id"]!.GetValue<int>();
+        using var form = new MultipartFormDataContent
+        {
+            { new StringContent("Tickets"), "nombre" },
+            { new ByteArrayContent(Encoding.UTF8.GetBytes("ticket,referencia\nNo puedo entrar,Se bloquea por 30 minutos.\nError 504,\n¿Cómo creo un usuario?,Administración > Usuarios.\n")), "archivo", "t.csv" },
+        };
+        int datasetId = (await (await _client.PostAsync("/api/datasets/archivo", form)).Content.ReadFromJsonAsync<JsonNode>())!["id"]!.GetValue<int>();
+        int evaluationId = (await PostJson("/api/evaluaciones", new
+        {
+            name = "Con revisión", agentId, datasetId, inputColumn = "ticket", requiresReview = true,
+            checks = new object[] { new { type = "correccion", label = "Correcta", expectedColumn = "referencia", blocking = true } },
+        }))!["id"]!.GetValue<int>();
+        int runId = (await PostJson($"/api/evaluaciones/{evaluationId}/ejecutar", new { }))!["runId"]!.GetValue<int>();
+        await WaitForRunAsync(runId);
+
+        // Pendiente: aparece en la lista y trae solo los casos que calificó el juez de la plataforma (los 2 con referencia).
+        JsonArray pendientes = (await _client.GetFromJsonAsync<JsonArray>("/api/revisiones/pendientes"))!;
+        Assert.Contains(pendientes, p => p!["id"]!.GetValue<int>() == runId);
+        JsonNode paquete = (await _client.GetFromJsonAsync<JsonNode>($"/api/corridas/{runId}/revision"))!;
+        Assert.Equal("Correcta", paquete["checks"]![0]!["label"]!.GetValue<string>());
+        Assert.Contains("equivalente", paquete["checks"]![0]!["scale"]!.GetValue<string>());
+        JsonArray casos = paquete["cases"]!.AsArray();
+        Assert.Equal(2, casos.Count);
+
+        // Un puntaje fuera de rango o una comparación que no existe se rechazan.
+        long primero = casos[0]!["resultId"]!.GetValue<long>(), segundo = casos[1]!["resultId"]!.GetValue<long>();
+        HttpResponseMessage malo = await _client.PostAsJsonAsync($"/api/corridas/{runId}/revision", new { reviewer = "Claude", results = new[] { new { resultId = primero, checks = new[] { new { label = "Otra", score = 4, reason = "" } } } } });
+        Assert.Equal(HttpStatusCode.BadRequest, malo.StatusCode);
+
+        // El juez de la plataforma dio 5 al primero y 1 al segundo; el revisor da 4 a los dos: coinciden en 1 de 2.
+        JsonNode respuesta = (await PostJson($"/api/corridas/{runId}/revision", new
+        {
+            reviewer = "Claude",
+            results = new[]
+            {
+                new { resultId = primero, checks = new[] { new { label = "Correcta", score = 4, reason = "Casi equivalente." } } },
+                new { resultId = segundo, checks = new[] { new { label = "Correcta", score = 4, reason = "Da la ruta." } } },
+            },
+        }))!;
+        JsonNode resumen = respuesta["summary"]![0]!;
+        Assert.Equal(2, resumen["cases"]!.GetValue<int>());
+        Assert.Equal(1, resumen["platformPassed"]!.GetValue<int>());
+        Assert.Equal(2, resumen["reviewPassed"]!.GetValue<int>());
+        Assert.Equal(0.5, resumen["agreement"]!.GetValue<double>());
+
+        JsonNode run = (await _client.GetFromJsonAsync<JsonNode>($"/api/corridas/{runId}"))!;
+        Assert.Equal("revisada", run["run"]!["reviewStatus"]!.GetValue<string>());
+        Assert.Equal("Claude", run["run"]!["reviewer"]!.GetValue<string>());
+        Assert.DoesNotContain((await _client.GetFromJsonAsync<JsonArray>("/api/revisiones/pendientes"))!, p => p!["id"]!.GetValue<int>() == runId);
+        JsonArray resultados = (await _client.GetFromJsonAsync<JsonArray>($"/api/corridas/{runId}/resultados"))!;
+        Assert.Equal("4/5", resultados.First(r => r!["id"]!.GetValue<long>() == primero)!["reviewChecks"]![0]!["display"]!.GetValue<string>());
+
+        // Sin revisión pedida, las corridas no quedan pendientes; se pueden marcar a mano.
+        int otra = (await PostJson("/api/evaluaciones", new { name = "Sin revisión", agentId, datasetId, inputColumn = "ticket", checks = new object[] { new { type = "correccion", expectedColumn = "referencia", blocking = true } } }))!["id"]!.GetValue<int>();
+        int otraCorrida = (await PostJson($"/api/evaluaciones/{otra}/ejecutar", new { }))!["runId"]!.GetValue<int>();
+        await WaitForRunAsync(otraCorrida);
+        Assert.Null((await _client.GetFromJsonAsync<JsonNode>($"/api/corridas/{otraCorrida}"))!["run"]!["reviewStatus"]);
+        Assert.Equal("pendiente", (await PostJson($"/api/corridas/{otraCorrida}/revision/marcar", new { }))!["reviewStatus"]!.GetValue<string>());
+    }
+
     private async Task<JsonNode> WaitForRunAsync(int runId)
     {
         for (int i = 0; i < 100; i++)

@@ -130,6 +130,10 @@ public sealed class Evaluation
     // Configuraciones a comparar con los mismos casos (modelo, prompt, base de conocimiento…).
     // Vacío = solo el agente de la evaluación, tal cual.
     public List<Variant> Variants { get; set; } = [];
+
+    // Cada corrida nueva queda con revisión pendiente: un revisor externo (por ejemplo Claude Code) vuelve a calificar
+    // las comparaciones con juez y devuelve sus puntajes por la API de revisión, para contrastarlos con el juez de la plataforma.
+    public bool RequiresReview { get; set; }
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
 }
 
@@ -214,6 +218,15 @@ public sealed class CheckDefinition
 
     // false = solo informativa: se mide y se muestra, pero no hace fallar el caso.
     public bool Blocking { get; set; } = true;
+
+    // Solo se evalúa si este campo de la respuesta vale OnlyWhenValue (p. ej. puede_responder = true);
+    // si no, la comparación se omite. Sirve para no gastar juez en casos donde no aplica.
+    public string? OnlyWhenPath { get; set; }
+    public string? OnlyWhenValue { get; set; }
+
+    // Indicaciones extra para el juez IA de esta evaluación (correcta, rúbrica, cobertura),
+    // p. ej. qué datos de la respuesta esperada no exigir o cuándo bajar el puntaje.
+    public string? JudgeInstructions { get; set; }
 }
 
 public enum RunStatus { Queued, Running, Completed, Failed, Cancelled }
@@ -254,6 +267,12 @@ public sealed class Run
 
     public RunStatus Status { get; set; } = RunStatus.Queued;
     public string? Error { get; set; }
+
+    // Revisión externa de las comparaciones con juez: null (no aplica), "pendiente" o "revisada".
+    public string? ReviewStatus { get; set; }
+    public string? Reviewer { get; set; }
+    public DateTimeOffset? ReviewedAt { get; set; }
+
     public int Total { get; set; }
     public int Completed { get; set; }
     public int Passed { get; set; }
@@ -290,6 +309,15 @@ public sealed class RunResult
     public CaseOutcome Outcome { get; set; }
     public string? Error { get; set; }
     public List<CheckResult> Checks { get; set; } = [];
+
+    // Calificaciones del revisor externo para las mismas comparaciones con juez (mismas etiquetas que Checks).
+    public List<CheckResult> ReviewChecks { get; set; } = [];
+}
+
+public static class ReviewStatuses
+{
+    public const string Pending = "pendiente";
+    public const string Done = "revisada";
 }
 
 public enum CheckStatus { Passed, Failed, Skipped, Error }

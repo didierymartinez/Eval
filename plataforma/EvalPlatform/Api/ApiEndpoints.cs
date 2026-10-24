@@ -36,7 +36,7 @@ public sealed record RunInput(string? Note, string? Variant = null);
 // Variants: nombres de las variantes a comparar (vacío = todas).
 public sealed record CompareInput(string? Note, List<string>? Variants);
 
-public sealed record EvaluationInput(string Name, int AgentId, int DatasetId, string InputColumn, List<CheckDefinition> Checks, int? Repetitions, List<Variant>? Variants = null, int? JudgeId = null);
+public sealed record EvaluationInput(string Name, int AgentId, int DatasetId, string InputColumn, List<CheckDefinition> Checks, int? Repetitions, List<Variant>? Variants = null, int? JudgeId = null, bool? RequiresReview = null);
 
 public sealed record AgentTemplate(string Id, string Name, string Description, AgentInput Agent);
 
@@ -61,6 +61,7 @@ public static partial class ApiEndpoints
         MapRuns(api.MapGroup("/corridas"));
         MapComparisons(api.MapGroup("/comparativas"));
         MapJudges(api.MapGroup("/jueces"));
+        MapReviews(api);
         MapTransfer(api);
     }
 
@@ -644,6 +645,10 @@ public static partial class ApiEndpoints
                 Note = string.IsNullOrWhiteSpace(note) ? null : note.Trim(),
                 Checks = evaluation.Checks,
                 Total = dataset.Rows.Count * Math.Max(1, evaluation.Repetitions),
+                // Solo tiene sentido revisar si hay comparaciones con juez.
+                ReviewStatus = evaluation.RequiresReview && evaluation.Checks.Any(c => CheckTypes.Find(c.Type)?.UsesJudge == true)
+                    ? ReviewStatuses.Pending
+                    : null,
             });
         }
         db.Runs.AddRange(runs);
@@ -785,9 +790,16 @@ public static partial class ApiEndpoints
             ResponsePath = string.IsNullOrWhiteSpace(c.ResponsePath) ? null : c.ResponsePath.Trim(),
             Threshold = c.Threshold,
             Blocking = c.Blocking,
+            OnlyWhenPath = string.IsNullOrWhiteSpace(c.OnlyWhenPath) ? null : c.OnlyWhenPath.Trim(),
+            OnlyWhenValue = string.IsNullOrWhiteSpace(c.OnlyWhenPath) ? null : c.OnlyWhenValue?.Trim() ?? "",
+            // Las indicaciones solo las usan las comparaciones con juez que arman su propio prompt.
+            JudgeInstructions = c.Type is CheckTypes.Correctness or CheckTypes.Rubric or CheckTypes.Coverage && !string.IsNullOrWhiteSpace(c.JudgeInstructions)
+                ? c.JudgeInstructions.Trim()
+                : null,
         }).ToList();
         evaluation.Repetitions = input.Repetitions ?? 1;
         evaluation.JudgeId = input.JudgeId;
+        evaluation.RequiresReview = input.RequiresReview ?? false;
         evaluation.Variants = (input.Variants ?? []).Select(v => new Variant
         {
             Name = v.Name.Trim(),
@@ -817,6 +829,9 @@ public static partial class ApiEndpoints
         r.Executor,
         r.Status,
         r.Error,
+        r.ReviewStatus,
+        r.Reviewer,
+        r.ReviewedAt,
         r.Total,
         r.Completed,
         r.Passed,

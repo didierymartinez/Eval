@@ -290,7 +290,7 @@ public sealed class UsageTrackingChatClient(IChatClient inner, Action<long> onUs
 public static partial class CustomJudges
 {
     // Corrección frente a la respuesta de referencia, con explicación: qué falta o qué contradice.
-    public static Task<(double? Score, string Reason)> CorrectnessAsync(ChatConfiguration judge, string question, string answer, string expected, CancellationToken ct) =>
+    public static Task<(double? Score, string Reason)> CorrectnessAsync(ChatConfiguration judge, string question, string answer, string expected, CancellationToken ct, string? instructions = null) =>
         AskAsync(judge, $$"""
             Eres un evaluador estricto. Compara el SIGNIFICADO de la RESPUESTA con la RESPUESTA ESPERADA.
             No importa la redacción ni el largo; importa que tenga los mismos datos y pasos, y que no contradiga nada.
@@ -310,10 +310,10 @@ public static partial class CustomJudges
             RESPUESTA:
             {{answer}}
 
-            Da tus respuestas entre las etiquetas: <S0>tu razonamiento</S0>, <S1>tu explicación</S1>, <S2>tu puntaje (solo el número)</S2>.
+            {{Extra(instructions)}}{{OutputFormat}}
             """, ct);
 
-    public static Task<(double? Score, string Reason)> RubricAsync(ChatConfiguration judge, string question, string answer, string criterion, CancellationToken ct) =>
+    public static Task<(double? Score, string Reason)> RubricAsync(ChatConfiguration judge, string question, string answer, string criterion, CancellationToken ct, string? instructions = null) =>
         AskAsync(judge, $$"""
             Eres un evaluador estricto. Califica de 1 a 5 qué tanto cumple la RESPUESTA el CRITERIO.
             5 = lo cumple por completo; 4 = lo cumple con detalles menores; 3 = a medias; 2 = casi no; 1 = no lo cumple.
@@ -328,10 +328,10 @@ public static partial class CustomJudges
             RESPUESTA:
             {{answer}}
 
-            Da tus respuestas entre las etiquetas: <S0>tu razonamiento</S0>, <S1>tu explicación</S1>, <S2>tu puntaje (solo el número)</S2>.
+            {{Extra(instructions)}}{{OutputFormat}}
             """, ct);
 
-    public static Task<(double? Score, string Reason)> CoverageAsync(ChatConfiguration judge, string question, string expected, IReadOnlyList<string> context, CancellationToken ct) =>
+    public static Task<(double? Score, string Reason)> CoverageAsync(ChatConfiguration judge, string question, string expected, IReadOnlyList<string> context, CancellationToken ct, string? instructions = null) =>
         AskAsync(judge, $$"""
             Eres un evaluador estricto de sistemas RAG. Decide si los DOCUMENTOS RECUPERADOS contienen la información
             necesaria para dar la RESPUESTA ESPERADA a la pregunta. No juzgues la redacción: solo si los datos están.
@@ -351,8 +351,21 @@ public static partial class CustomJudges
             DOCUMENTOS RECUPERADOS:
             {{string.Join("\n---\n", context)}}
 
-            Da tus respuestas entre las etiquetas: <S0>tu razonamiento</S0>, <S1>tu explicación</S1>, <S2>tu puntaje (solo el número)</S2>.
+            {{Extra(instructions)}}{{OutputFormat}}
             """, ct);
+
+    // Con "<S0>tu razonamiento</S0>" algunos modelos copiaban el texto de ejemplo y escribían fuera de las
+    // etiquetas, y el puntaje se perdía. Por eso el formato se muestra con marcadores [entre corchetes].
+    private const string OutputFormat = """
+        Responde exactamente con este formato, reemplazando lo que está entre corchetes:
+        <S0>[tu razonamiento, paso a paso]</S0>
+        <S1>[tu explicación en español, en una o dos frases]</S1>
+        <S2>[solo el número del 1 al 5]</S2>
+        """;
+
+    // Indicaciones de la evaluación, después del material y antes del formato, para que el juez las aplique al calificar.
+    private static string Extra(string? instructions) =>
+        string.IsNullOrWhiteSpace(instructions) ? "" : $"INSTRUCCIONES ADICIONALES DE ESTA EVALUACIÓN (tienen prioridad sobre la escala):\n{instructions.Trim()}\n\n";
 
     private static async Task<(double? Score, string Reason)> AskAsync(ChatConfiguration judge, string prompt, CancellationToken ct)
     {
@@ -360,9 +373,17 @@ public static partial class CustomJudges
             [new ChatMessage(ChatRole.User, prompt)],
             new ChatOptions { Temperature = 0 },
             ct);
-        string text = response.Text;
-        string reason = Tag(text, 1) ?? text.Trim();
-        return double.TryParse(Tag(text, 2)?.Trim(), System.Globalization.CultureInfo.InvariantCulture, out double score) && score is >= 1 and <= 5
+        return ParseVerdict(response.Text);
+    }
+
+    // Lee el puntaje de <S2>; si el modelo no cerró bien las etiquetas, acepta "<S2> 4" o "Puntaje: 4" al final.
+    public static (double? Score, string Reason) ParseVerdict(string text)
+    {
+        string? scoreText = Tag(text, 2) ?? Group(text, @"<S2>\s*\[?\s*([1-5](?:[.,]\d+)?)")
+            ?? Group(text, @"(?i)puntaje\W{0,3}([1-5](?:[.,]\d+)?)\s*(?:/\s*5)?\s*$");
+        string? explanation = Tag(text, 1);
+        string reason = explanation is { Length: > 0 } && !explanation.StartsWith('[') ? explanation : Strip(text);
+        return double.TryParse(scoreText?.Replace(',', '.').Trim(), System.Globalization.CultureInfo.InvariantCulture, out double score) && score is >= 1 and <= 5
             ? (score, reason)
             : (null, $"El juez no devolvió un puntaje válido: {Truncate(text, 300)}");
     }
@@ -372,6 +393,11 @@ public static partial class CustomJudges
         Match m = Regex.Match(text, $@"<S{n}>(.*?)</S{n}>", RegexOptions.Singleline);
         return m.Success ? m.Groups[1].Value.Trim() : null;
     }
+
+    private static string? Group(string text, string pattern) =>
+        Regex.Match(text, pattern, RegexOptions.Singleline) is { Success: true } m ? m.Groups[1].Value : null;
+
+    private static string Strip(string text) => Regex.Replace(text, @"</?S\d>", " ").Trim();
 
     private static string Truncate(string s, int max) => s.Length <= max ? s : s[..max] + "…";
 }

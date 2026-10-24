@@ -42,6 +42,16 @@ public sealed class CheckRunner(IJudgeProvider judgeProvider)
                 : "No hay valor esperado configurado.");
         }
 
+        if (!string.IsNullOrWhiteSpace(check.OnlyWhenPath))
+        {
+            string condition = JsonPath.SelectText(data.Invocation.Json, check.OnlyWhenPath);
+            if (Normalize(condition) != Normalize(check.OnlyWhenValue))
+            {
+                return Set(result, CheckStatus.Skipped,
+                    $"Solo se evalúa cuando {check.OnlyWhenPath} es \"{check.OnlyWhenValue}\"; en este caso es \"{Readable(Normalize(condition), Short(condition))}\".");
+            }
+        }
+
         string actual = string.IsNullOrWhiteSpace(check.ResponsePath)
             ? data.Invocation.Output
             : JsonPath.SelectText(data.Invocation.Json, check.ResponsePath);
@@ -251,7 +261,7 @@ public sealed class CheckRunner(IJudgeProvider judgeProvider)
         switch (check.Type)
         {
             case CheckTypes.Correctness:
-                (score, reason) = await CustomJudges.CorrectnessAsync(judge, data.Input, actual, expected, ct);
+                (score, reason) = await CustomJudges.CorrectnessAsync(judge, data.Input, actual, expected, ct, check.JudgeInstructions);
                 break;
             case CheckTypes.Relevance:
                 (score, reason) = Read(await new RelevanceEvaluator().EvaluateAsync(messages, response, judge, cancellationToken: ct));
@@ -260,10 +270,10 @@ public sealed class CheckRunner(IJudgeProvider judgeProvider)
                 (score, reason) = Read(await new GroundednessEvaluator().EvaluateAsync(messages, response, judge, [new GroundednessEvaluatorContext(string.Join("\n---\n", data.Invocation.Context))], ct));
                 break;
             case CheckTypes.Rubric:
-                (score, reason) = await CustomJudges.RubricAsync(judge, data.Input, actual, expected, ct);
+                (score, reason) = await CustomJudges.RubricAsync(judge, data.Input, actual, expected, ct, check.JudgeInstructions);
                 break;
             case CheckTypes.Coverage:
-                (score, reason) = await CustomJudges.CoverageAsync(judge, data.Input, expected, data.Invocation.Context, ct);
+                (score, reason) = await CustomJudges.CoverageAsync(judge, data.Input, expected, data.Invocation.Context, ct, check.JudgeInstructions);
                 break;
             default:
                 return Set(result, CheckStatus.Error, $"Tipo de comparación sin implementar: {check.Type}");

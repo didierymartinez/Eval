@@ -214,7 +214,9 @@ function runsTable(runs) {
         h('td', null, r.evaluationName),
         h('td', { class: 'muted' }, r.agentName, r.variant ? h('div', { class: 'small' }, `Variante: ${r.variant}`) : null),
         h('td', { class: 'muted' }, fmtDate(r.createdAt)),
-        h('td', null, runStatusBadge(r.status)),
+        h('td', null, runStatusBadge(r.status),
+          r.reviewStatus === 'pendiente' ? h('span', { class: 'badge warn', style: { marginLeft: '6px' }, title: 'Claude Code la revisará cuando se lo pidas' }, 'revisión pendiente')
+            : r.reviewStatus === 'revisada' ? h('span', { class: 'badge ok', style: { marginLeft: '6px' } }, 'revisada') : null),
         h('td', null, r.status === 'Completed' || r.completed ? `${r.passed} de ${r.completed} aprobados` : '—'))) : emptyRow(5, 'Todavía no se ha ejecutado ninguna evaluación.'))));
 }
 
@@ -982,12 +984,19 @@ async function pageEvaluationForm(id) {
         h('div', null,
           h('label', { class: 'inline' }, h('input', { type: 'checkbox', checked: c.blocking !== false, onchange: (ev) => (c.blocking = ev.target.checked) }), 'Cuenta para aprobar el caso'),
           h('div', { class: 'help' }, 'Desmárcala para solo medir, sin que haga fallar el caso.'))),
-      h('details', { open: !!(c.label || c.responsePath) },
+      h('details', { open: !!(c.label || c.responsePath || c.onlyWhenPath || c.judgeInstructions) },
         h('summary', null, 'Opciones avanzadas'),
         h('div', { class: 'grid-2', style: { marginTop: '8px' } },
           field('Nombre para mostrar', h('input', { type: 'text', value: c.label || '', placeholder: info?.label, oninput: (ev) => (c.label = ev.target.value) })),
           field('Comparar otro campo de la respuesta', h('input', { type: 'text', value: c.responsePath || '', placeholder: 'Ej. output.puede_responder', oninput: (ev) => (c.responsePath = ev.target.value) }),
-            'Ruta dentro del JSON del agente. Vacío = la respuesta principal.'))));
+            'Ruta dentro del JSON del agente. Vacío = la respuesta principal.'),
+          field('Evaluar solo cuando el campo', h('input', { type: 'text', value: c.onlyWhenPath || '', placeholder: 'Ej. puede_responder', oninput: (ev) => (c.onlyWhenPath = ev.target.value || null) }),
+            'Vacío = siempre. Si el campo no tiene el valor de al lado, la comparación se omite (y no gasta juez).'),
+          field('tenga el valor', h('input', { type: 'text', value: c.onlyWhenValue || '', placeholder: 'Ej. sí', oninput: (ev) => (c.onlyWhenValue = ev.target.value || null) }))),
+        info?.usesJudge && ['correccion', 'rubrica', 'cobertura'].includes(c.type)
+          ? field('Instrucciones para el juez', h('textarea', { rows: 4, value: c.judgeInstructions || '', placeholder: 'Ej. No exijas datos puntuales que solo se obtienen revisando la base del cliente (valores, fechas, adjuntos). Si falta la ruta del menú o un paso necesario, el puntaje máximo es 3.', oninput: (ev) => (c.judgeInstructions = ev.target.value || null) }),
+            'Se agregan a las instrucciones del juez en esta evaluación.')
+          : null));
   };
 
   const agentOf = (agentId) => agents.find((a) => a.id === Number(agentId));
@@ -1079,7 +1088,10 @@ async function pageEvaluationForm(id) {
             'Los modelos no responden siempre igual. Con 3 ves si un caso pasa siempre o solo a veces.')),
         h('div', { class: 'grid-2' },
           field('Juez IA', judgeSelect(judges, e.judgeId, (v) => { e.judgeId = v; draw(); }),
-            ['Califica las comparaciones (IA) y (RAG). Los tokens se cuentan en el juez elegido: cada equipo puede usar ', h('a', { href: '#/jueces' }, 'el suyo'), '.']))),
+            ['Califica las comparaciones (IA) y (RAG). Los tokens se cuentan en el juez elegido: cada equipo puede usar ', h('a', { href: '#/jueces' }, 'el suyo'), '.']),
+          h('div', null,
+            h('label', { class: 'inline' }, h('input', { type: 'checkbox', checked: !!e.requiresReview, onchange: (ev) => (e.requiresReview = ev.target.checked) }), 'Revisar con Claude (revisión externa)'),
+            h('div', { class: 'help' }, 'Cada corrida queda con revisión pendiente. Claude Code vuelve a calificar las comparaciones con juez cuando se lo pidas o en una tarea programada, y aquí se ve cuánto coincide con el juez IA.')))),
       h('h2', null, 'Variantes a comparar (opcional)'),
       h('p', { class: 'muted', style: { marginTop: 0 } }, 'Corre los mismos casos con distintas configuraciones y míralas lado a lado: otro modelo, otro prompt, más o menos documentos, con o sin base de conocimiento. Cada parámetro llega al agente como ', h('code', null, '{{nombre}}'), '. Para números o booleanos en el cuerpo JSON usa ', h('code', null, '"{{json:nombre}}"'), '.'),
       e.variants.map(variantCard),
@@ -1147,8 +1159,10 @@ async function pageRun(id) {
   let timer;
   let executor = null;
 
+  let review = null;
   const load = async () => {
     [data, results] = await Promise.all([api(`/corridas/${id}`), api(`/corridas/${id}/resultados`)]);
+    review = data.run.reviewStatus === 'revisada' ? await api(`/corridas/${id}/revision/resumen`) : null;
     if (data.run.executor && (data.run.status === 'Running' || data.run.status === 'Queued')) executor = await executorStatus(data.run.executor);
     draw();
     const active = data.run.status === 'Queued' || data.run.status === 'Running';
@@ -1193,6 +1207,7 @@ async function pageRun(id) {
             : null) : null) : null,
       run.status === 'Failed' ? h('div', { class: 'notice bad' }, h('strong', null, 'La corrida falló. '), run.error || '') : null,
       run.status === 'Cancelled' ? h('div', { class: 'notice warn' }, 'La corrida se canceló; se muestran los casos que alcanzaron a ejecutarse.') : null,
+      reviewBox(run, review, data.checks, active, async (accion) => { await api(`/corridas/${id}/revision/${accion}`, { method: 'POST' }); await load(); }),
       summary.skippedJudgeChecks > 0 ? h('div', { class: 'notice warn' }, `${summary.skippedJudgeChecks} comparaciones con juez IA no se ejecutaron porque el juez no está configurado. Los casos se aprobaron o fallaron solo con el resto de comparaciones.`) : null,
       h('div', { class: 'stats' },
         h('div', { class: 'stat ok' }, h('div', { class: 'value' }, pct(summary.passRate)), h('div', { class: 'label' }, `${summary.passed} de ${results.length} aprobados`)),
@@ -1248,7 +1263,7 @@ async function pageRun(id) {
             h('td', null, outcomeBadge(r.outcome)),
             h('td', null, h('div', { class: 'chips nowrap' }, r.checks.map(checkDot))),
             h('td', { class: 'muted small' }, `${(r.latencyMs / 1000).toFixed(1)} s`))];
-          if (expanded.has(key)) rows.push(h('tr', { class: 'case-detail' }, h('td', { colspan: 6 }, caseDetail(r))));
+          if (expanded.has(key)) rows.push(h('tr', { class: 'case-detail' }, h('td', { colspan: 6 }, caseDetail(r, run.reviewer))));
           return rows;
         }) : emptyRow(6, active ? 'Esperando resultados…' : 'No hay casos con este filtro.')))));
   };
@@ -1256,7 +1271,32 @@ async function pageRun(id) {
   await load();
 }
 
-function caseDetail(r) {
+// Revisión externa (Claude Code): estado, botón para marcarla y, si ya se hizo, cuánto coincide con el juez IA.
+function reviewBox(run, review, checks, active, act) {
+  const usesJudge = (checks || []).some((c) => checkInfo(c.type)?.usesJudge);
+  if (!usesJudge || active) return null;
+  if (run.reviewStatus === 'pendiente') {
+    return h('div', { class: 'notice info' }, h('strong', null, 'Revisión de Claude pendiente. '),
+      'Se califica cuando pidas en Claude Code "revisa las corridas pendientes" o en la tarea programada. ',
+      h('button', { class: 'small', onclick: () => act('quitar') }, 'Quitar de pendientes'));
+  }
+  if (run.reviewStatus !== 'revisada') {
+    return h('div', { class: 'actions', style: { margin: '6px 0' } },
+      h('button', { class: 'small', onclick: () => act('marcar'), title: 'Claude Code volverá a calificar las comparaciones con juez de esta corrida' }, 'Marcar para revisión de Claude'));
+  }
+  return h('div', null,
+    h('h2', null, `Revisión de ${run.reviewer || 'Claude'}`, h('span', { class: 'muted small', style: { marginLeft: '8px', fontWeight: 'normal' } }, fmtDate(run.reviewedAt))),
+    h('div', { class: 'table-wrap' }, h('table', null,
+      h('thead', null, h('tr', null, h('th', null, 'Comparación'), h('th', null, 'Casos'), h('th', null, 'Aprueba el juez IA'), h('th', null, `Aprueba ${run.reviewer || 'el revisor'}`),
+        h('th', null, 'Coinciden'), h('th', null, 'Puntaje medio juez IA'), h('th', null, `Puntaje medio ${run.reviewer || 'revisor'}`))),
+      h('tbody', null, (review?.summary || []).map((c) => h('tr', null,
+        h('td', null, h('strong', null, c.label)), h('td', null, c.cases), h('td', null, c.platformPassed), h('td', null, c.reviewPassed),
+        h('td', null, h('span', { class: `badge ${c.agreement >= 0.85 ? 'ok' : c.agreement >= 0.7 ? 'warn' : 'bad'}` }, pct(c.agreement))),
+        h('td', null, `${c.platformAverage.toFixed(2)}/5`), h('td', null, `${c.reviewAverage.toFixed(2)}/5`)))))),
+    h('button', { class: 'small', style: { marginTop: '6px' }, onclick: () => act('marcar'), title: 'Vuelve a dejarla pendiente para otra revisión' }, 'Revisar otra vez'));
+}
+
+function caseDetail(r, reviewer) {
   return h('div', null,
     h('div', { class: 'grid-2' },
       h('div', null, h('h3', null, 'Entrada'), h('div', { class: 'text-block' }, r.input)),
@@ -1270,6 +1310,9 @@ function caseDetail(r) {
           h('strong', null, c.label), c.display ? h('span', { class: 'muted' }, ` · ${c.display}`) : null,
           c.blocking ? null : h('span', { class: 'badge skip', style: { marginLeft: '6px' } }, 'informativa'),
           h('div', null, c.reason),
+          ...(r.reviewChecks || []).filter((rv) => rv.label === c.label).map((rv) => h('div', { class: 'small', style: { marginTop: '4px' } },
+            checkDot(rv), h('strong', null, ` ${reviewer || 'Revisor'}: `), rv.display, rv.status !== c.status ? h('span', { class: 'badge warn', style: { marginLeft: '6px' } }, 'no coincide con el juez') : null,
+            h('div', { class: 'muted' }, rv.reason))),
           c.expected ? h('div', { class: 'small muted' }, 'Esperado: ', c.expected) : null))))) : null,
     r.context.length ? h('details', null, h('summary', null, `Documentos recuperados (${r.context.length})`), r.context.map((c) => h('pre', null, c))) : null,
     (r.toolCalls || []).length
